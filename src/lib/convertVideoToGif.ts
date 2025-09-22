@@ -2,10 +2,25 @@ import path from "node:path"
 import { mkdir } from "node:fs/promises"
 import ffmpeg, { type FfprobeData } from "fluent-ffmpeg"
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg"
-import ffprobeInstaller from "@ffprobe-installer/ffprobe"
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path)
-ffmpeg.setFfprobePath(ffprobeInstaller.path)
+
+const dynamicRequire = typeof module !== "undefined" && module.require ? module.require.bind(module) : (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    return Function("return require")()
+  } catch {
+    return null
+  }
+})()
+
+const ffprobeInstaller = dynamicRequire ? dynamicRequire('@ffprobe-installer/ffprobe') as { path: string } | null : null
+
+if (ffprobeInstaller?.path) {
+  ffmpeg.setFfprobePath(ffprobeInstaller.path)
+} else {
+  console.warn('[convertVideoToGif] FFprobe binary not available. Some metadata features may be limited.')
+}
 
 export interface ConvertMp4ToGifOptions {
   /**
@@ -96,5 +111,3 @@ export async function convertMp4ToGif(
     metadata,
   }
 }
-
-
