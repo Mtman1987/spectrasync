@@ -3,7 +3,7 @@ import { getAdminDb } from '@/lib/firebase-admin';
 import { getSettings } from '@/app/settings/actions';
 import { FieldValue, type CollectionReference, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { getCurrentRaidTrainConductorId } from '@/app/raid-train/actions';
-import { getTwitchChatParticipants, getTwitchUsersByLogins, getTwitchUserById, type BasicTwitchUser } from '@/bot/twitch-actions';
+import { getTwitchChatParticipants, getTwitchUsersByLogins, getTwitchUserById, type BasicTwitchUser } from '@/lib/twitch';
 
 interface ParticipantRecord {
   id: string;
@@ -302,3 +302,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: errorMessage }, { status: 500 });
   }
 }
+

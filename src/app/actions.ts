@@ -7,7 +7,7 @@ import { getAdminDb } from '@/lib/firebase-admin';
 import { FieldValue, FieldPath } from 'firebase-admin/firestore';
 import type { LiveUser } from './raid-pile/types';
 import { getSettings } from './settings/actions';
-import { getTwitchUserByUsername, getTwitchStreams, getTwitchClips } from '@/bot/twitch-actions';
+import { getTwitchUserByUsername, getTwitchStreams, getTwitchClips } from '@/lib/twitch';
 
 
 // --- USER-FOCUSED ACTIONS ---
@@ -606,3 +606,4 @@ export async function addPointsToAdmin(guildId: string, adminDiscordId: string, 
     return { success: false, error: errorMessage };
   }
 }
+
