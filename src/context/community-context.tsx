@@ -1,4 +1,3 @@
-
 "use client";
 
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
@@ -10,12 +9,34 @@ type Guild = {
   icon: string | null;
 };
 
+type DiscordProfile = {
+  id: string;
+  username: string;
+  avatar: string | null;
+};
+
+type TwitchProfile = {
+  id: string;
+  login: string;
+  displayName: string;
+  avatar: string | null;
+};
+
+type AdminProfile = {
+  discordInfo?: DiscordProfile | null;
+  twitchInfo?: TwitchProfile | null;
+  discordUserGuilds?: Guild[];
+  selectedGuild?: string | null;
+};
+
 interface CommunityContextType {
   selectedGuild: string | null;
-  setSelectedGuild: (guildId: string | null) => void;
+  setSelectedGuild: (guildId: string | null) => Promise<void>;
   adminId: string | null;
   setAdminId: (id: string | null) => void;
   adminGuilds: Guild[];
+  adminProfile: AdminProfile | null;
+  refreshAdminProfile: (overrideAdminId?: string | null) => Promise<AdminProfile | null>;
   loading: boolean;
 }
 
@@ -25,35 +46,58 @@ export const CommunityProvider = ({ children }: { children: ReactNode }) => {
   const [adminId, setAdminIdState] = useState<string | null>(null);
   const [selectedGuild, setSelectedGuildState] = useState<string | null>(null);
   const [adminGuilds, setAdminGuilds] = useState<Guild[]>([]);
+  const [adminProfile, setAdminProfile] = useState<AdminProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  
+
+  const refreshAdminProfile = useCallback(async (overrideAdminId?: string | null) => {
+    const targetAdminId = overrideAdminId ?? adminId ?? localStorage.getItem('adminDiscordId');
+
+    if (!targetAdminId) {
+      setAdminProfile(null);
+      setAdminGuilds([]);
+      return null;
+    }
+
+    try {
+      const { value } = await getAdminInfo(targetAdminId);
+      setAdminProfile(value ?? null);
+      setAdminGuilds(value?.discordUserGuilds || []);
+      return value ?? null;
+    } catch (error) {
+      console.error('[CommunityProvider] Failed to refresh admin profile', error);
+      setAdminProfile(null);
+      setAdminGuilds([]);
+      return null;
+    }
+  }, [adminId]);
+
   const setAdminId = useCallback((id: string | null) => {
     setAdminIdState(id);
     if (id) {
       localStorage.setItem('adminDiscordId', id);
+      void refreshAdminProfile(id);
     } else {
-      // This is the logout path
       localStorage.removeItem('adminDiscordId');
       localStorage.removeItem('selectedGuildId');
       setAdminGuilds([]);
+      setAdminProfile(null);
       setSelectedGuildState(null);
     }
-  }, []);
+  }, [refreshAdminProfile]);
 
   const setSelectedGuild = useCallback(async (guildId: string | null) => {
     setSelectedGuildState(guildId);
     if (guildId) {
-        localStorage.setItem('selectedGuildId', guildId);
-        // Only try to save if adminId is also present.
-        const currentAdminId = localStorage.getItem('adminDiscordId');
-        if(currentAdminId) {
-            await saveAdminInfo(currentAdminId, { selectedGuild: guildId });
-        }
+      localStorage.setItem('selectedGuildId', guildId);
+      const currentAdminId = localStorage.getItem('adminDiscordId');
+      if (currentAdminId) {
+        await saveAdminInfo(currentAdminId, { selectedGuild: guildId });
+        await refreshAdminProfile(currentAdminId);
+      }
     } else {
-        localStorage.removeItem('selectedGuildId');
+      localStorage.removeItem('selectedGuildId');
     }
-  }, []);
-
+  }, [refreshAdminProfile]);
 
   useEffect(() => {
     const initializeCommunity = async () => {
@@ -62,9 +106,8 @@ export const CommunityProvider = ({ children }: { children: ReactNode }) => {
       setAdminIdState(adminDiscordId);
 
       if (adminDiscordId) {
-        const { value } = await getAdminInfo(adminDiscordId);
-        const userGuilds = value?.discordUserGuilds || [];
-        setAdminGuilds(userGuilds);
+        const profile = await refreshAdminProfile(adminDiscordId);
+        const userGuilds = profile?.discordUserGuilds || [];
 
         const storedGuildId = localStorage.getItem('selectedGuildId');
 
@@ -72,33 +115,41 @@ export const CommunityProvider = ({ children }: { children: ReactNode }) => {
           if (userGuilds.length === 0 || userGuilds.some((g: Guild) => g.id === storedGuildId)) {
             setSelectedGuildState(storedGuildId);
           } else if (userGuilds.length > 0) {
-            // Stored guild is no longer valid; fall back to the first guild from Discord.
             const defaultGuildId = userGuilds[0].id;
             await setSelectedGuild(defaultGuildId);
           } else {
             setSelectedGuildState(null);
           }
         } else if (userGuilds.length > 0) {
-          // If no guild is selected, default to the first available one.
           const defaultGuildId = userGuilds[0].id;
           await setSelectedGuild(defaultGuildId);
         } else {
-          // No guilds available for this user
           setSelectedGuildState(null);
         }
       } else {
-         // If no adminId, ensure everything is cleared
-         setAdminGuilds([]);
-         setSelectedGuildState(null);
+        setAdminGuilds([]);
+        setAdminProfile(null);
+        setSelectedGuildState(null);
       }
       setLoading(false);
     };
-    initializeCommunity();
-  }, [adminId, setSelectedGuild]);
 
+    void initializeCommunity();
+  }, [refreshAdminProfile, setSelectedGuild]);
 
   return (
-    <CommunityContext.Provider value={{ selectedGuild, setSelectedGuild, adminId, setAdminId, adminGuilds, loading }}>
+    <CommunityContext.Provider
+      value={{
+        selectedGuild,
+        setSelectedGuild,
+        adminId,
+        setAdminId,
+        adminGuilds,
+        adminProfile,
+        refreshAdminProfile,
+        loading,
+      }}
+    >
       {children}
     </CommunityContext.Provider>
   );

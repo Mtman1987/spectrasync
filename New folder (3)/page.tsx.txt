@@ -1,0 +1,147 @@
+
+"use client";
+
+import { useState, useTransition } from "react";
+import { CosmicRaidLogo } from "@/components/icons";
+import { useCommunity } from "@/context/community-context";
+import { Button } from "@/components/ui/button";
+import { Loader2 } from "lucide-react";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
+import { saveAdminTwitchInfo, saveAdminInfo } from "./actions";
+import DashboardPage from "./dashboard/page";
+
+
+function SetupForm() {
+  const { toast } = useToast();
+  const { setAdminId, setSelectedGuild, refreshCommunityData } = useCommunity();
+  const [isPending, startTransition] = useTransition();
+
+  const [localAdminId, setLocalAdminId] = useState("");
+  const [localGuildId, setLocalGuildId] = useState("");
+  const [localTwitchUsername, setLocalTwitchUsername] = useState("");
+
+  const handleSave = () => {
+    if (!localAdminId || !localGuildId || !localTwitchUsername) {
+      toast({
+        title: "Error",
+        description: "All fields are required.",
+        variant: "destructive",
+      });
+      return;
+    }
+    startTransition(async () => {
+      // First save the twitch info
+      const twitchResult = await saveAdminTwitchInfo(localAdminId, localTwitchUsername);
+
+      if (!twitchResult.success) {
+         toast({
+            title: "Setup Failed",
+            description: twitchResult.error,
+            variant: "destructive",
+        });
+        return;
+      }
+      
+      // Then save the primary guild info
+      const guildInfo = {
+        selectedGuild: localGuildId,
+        managedGuilds: [localGuildId], // Start with the first one
+      }
+      const adminInfoResult = await saveAdminInfo(localAdminId, guildInfo);
+      
+      if (adminInfoResult.success) {
+        setAdminId(localAdminId);
+        // We don't set selected guild directly anymore, we trigger a full refresh
+        if (refreshCommunityData) {
+          await refreshCommunityData();
+        }
+        toast({
+          title: "Configuration Saved!",
+          description: "Loading your community dashboard...",
+        });
+      } else {
+         toast({
+            title: "Setup Failed",
+            description: adminInfoResult.error,
+            variant: "destructive",
+        });
+      }
+    });
+  };
+
+  return (
+    <Card className="mt-6 w-full max-w-md mx-auto text-left">
+        <CardHeader>
+            <CardTitle>Initial Setup</CardTitle>
+            <CardDescription>Enter your user IDs and the Server ID of the community you wish to manage.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+            <div className="space-y-2">
+                <Label htmlFor="admin-id">Your Discord User ID</Label>
+                <Input id="admin-id" placeholder="Enter your Discord User ID" value={localAdminId} onChange={(e) => setLocalAdminId(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+                <Label htmlFor="guild-id">Discord Server (Guild) ID</Label>
+                <Input id="guild-id" placeholder="Enter the ID of the server to manage" value={localGuildId} onChange={(e) => setLocalGuildId(e.target.value)} />
+            </div>
+             <div className="space-y-2">
+                <Label htmlFor="twitch-username">Your Twitch Username</Label>
+                <Input id="twitch-username" placeholder="Enter your Twitch username" value={localTwitchUsername} onChange={(e) => setLocalTwitchUsername(e.target.value)} />
+            </div>
+        </CardContent>
+        <CardFooter>
+            <Button onClick={handleSave} disabled={isPending} className="w-full">
+                {isPending ? <Loader2 className="animate-spin" /> : "Save and Continue"}
+            </Button>
+        </CardFooter>
+    </Card>
+  );
+}
+
+
+export default function HomePage() {
+  const { selectedGuild, loading: communityLoading } = useCommunity();
+
+  if (communityLoading) {
+    return (
+      <SetupPage>
+        <div className="flex items-center justify-center p-8">
+            <Loader2 className="h-8 w-8 animate-spin" />
+            <p className="ml-2">Loading Community...</p>
+        </div>
+      </SetupPage>
+    );
+  }
+
+  // If a guild is selected, the user is configured and can see the dashboard.
+  if (selectedGuild) {
+    return <DashboardPage />;
+  }
+
+  // If no guild is selected after loading, show the welcome/setup page.
+  return (
+    <SetupPage>
+      <p className="text-muted-foreground my-6 max-w-lg mx-auto">
+        This is your central command for managing your Twitch and Discord community. To get started, configure your Admin and Community IDs below.
+      </p>
+      <SetupForm />
+    </SetupPage>
+  );
+}
+
+function SetupPage({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-screen w-full flex-col items-center justify-center bg-background p-4">
+      <div className="max-w-2xl text-center w-full">
+        <CosmicRaidLogo className="h-16 w-16 mx-auto text-primary mb-4" />
+        <h1 className="text-4xl font-bold font-headline mb-2">
+          Welcome to Cosmic Raid
+        </h1>
+        {children}
+      </div>
+    </div>
+  );
+}

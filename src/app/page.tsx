@@ -6,7 +6,7 @@ import { SetupClient } from "@/app/setup-client";
 import { CosmicRaidLogo } from "@/components/icons";
 import { getAdminInfo } from "./actions";
 import { redirect, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useCommunity } from "@/context/community-context";
 
 
@@ -45,6 +45,7 @@ export default function HomePage() {
                 <SetupClient 
                     user={null}
                     adminGuilds={[]}
+                    twitchInfo={null}
                     error={errorFromQuery}
                     adminDiscordId={null}
                 />
@@ -62,29 +63,34 @@ export default function HomePage() {
 }
 
 function SetupLoader({ adminDiscordId, error }: { adminDiscordId: string, error: string | null }) {
-    const [data, setData] = useState<{ user: any, guilds: any[] } | null>(null);
+    const [data, setData] = useState<{ user: any; guilds: any[]; twitchInfo: any | null } | null>(null);
     const [loading, setLoading] = useState(true);
     const [fetchError, setFetchError] = useState<string | null>(error);
 
-    useEffect(() => {
-        async function fetchData() {
-            setLoading(true);
-            const { value: adminData, error: adminError } = await getAdminInfo(adminDiscordId);
-            
-            if (adminError) {
-                setFetchError(adminError);
-            } else if (adminData) {
-                setData({
-                    user: adminData.discordInfo || null,
-                    guilds: adminData.discordUserGuilds || [],
-                });
-            } else {
-                 setFetchError("Could not load your admin profile. Please try logging in again.");
-            }
-            setLoading(false);
+    const fetchProfile = useCallback(async () => {
+        setLoading(true);
+        const { value: adminData, error: adminError } = await getAdminInfo(adminDiscordId);
+
+        if (adminError) {
+            setFetchError(adminError);
+            setData(null);
+        } else if (adminData) {
+            setData({
+                user: adminData.discordInfo || null,
+                guilds: adminData.discordUserGuilds || [],
+                twitchInfo: adminData.twitchInfo || null,
+            });
+            setFetchError(null);
+        } else {
+            setData(null);
+            setFetchError("Could not load your admin profile. Please try logging in again.");
         }
-        fetchData();
+        setLoading(false);
     }, [adminDiscordId]);
+
+    useEffect(() => {
+        fetchProfile();
+    }, [fetchProfile]);
 
     if (loading) {
         return <p>Loading your profile...</p>;
@@ -92,10 +98,12 @@ function SetupLoader({ adminDiscordId, error }: { adminDiscordId: string, error:
 
     return (
         <SetupClient
-            user={data?.user}
+            user={data?.user || null}
             adminGuilds={data?.guilds || []}
+            twitchInfo={data?.twitchInfo || null}
             error={fetchError}
             adminDiscordId={adminDiscordId}
+            onProfileRefresh={fetchProfile}
         />
     )
 }

@@ -1,0 +1,119 @@
+
+'use server';
+/**
+ * @fileOverview A flow for generating a GIF from a video URL using the Shotstack API.
+ * 
+ * - generateGifFromUrl - A function that takes a video URL and returns the URL of the generated GIF.
+ * - GenerateGifInput - The input type for the generateGifFromUrl function.
+ * - GenerateGifOutput - The return type for the generateGifFromUrl function.
+ */
+
+import { ai } from '@/ai/genkit';
+import { GenerateGifInputSchema, GenerateGifOutputSchema, type GenerateGifInput, type GenerateGifOutput } from './schemas';
+
+
+// Main exported function that clients will call
+export async function generateGifFromUrl(
+  input: GenerateGifInput
+): Promise<GenerateGifOutput> {
+  return generateGifFlow(input);
+}
+
+
+// Helper function to delay execution
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+
+// Genkit Flow Definition
+const generateGifFlow = ai.defineFlow(
+  {
+    name: 'generateGifFlow',
+    inputSchema: GenerateGifInputSchema,
+    outputSchema: GenerateGifOutputSchema,
+  },
+  async ({ videoUrl }) => {
+    const apiKey = "dZkvBvD5sFp9uGfXgWvYeVfL8S34f3G0T6n4bA2p";
+    if (!apiKey) {
+      throw new Error('Shotstack API key is not configured in environment variables.');
+    }
+
+    const apiUrl = 'https://api.shotstack.io/v1';
+
+    // 1. Start the render job
+    const renderResponse = await fetch(`${apiUrl}/render`, {
+        method: 'POST',
+        headers: {
+            'x-api-key': apiKey,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            timeline: {
+                tracks: [{
+                    clips: [{
+                        asset: {
+                            type: 'video',
+                            src: videoUrl
+                        },
+                        start: 0,
+                        length: "auto"
+                    }]
+                }]
+            },
+            output: {
+                format: 'gif',
+                fps: 15,
+                size: {
+                    width: 320,
+                    height: 180
+                }
+            }
+        })
+    });
+    
+    if (!renderResponse.ok) {
+        const errorText = await renderResponse.text();
+        console.error("Shotstack render error:", errorText);
+        throw new Error(`Failed to start render job: ${renderResponse.statusText}`);
+    }
+
+    const { response: renderResponseBody } = await renderResponse.json();
+    const renderId = renderResponseBody.id;
+
+    // 2. Poll for the result
+    let status = '';
+    let resultUrl = '';
+    let attempts = 0;
+
+    while (status !== 'done' && attempts < 30) { // Poll for max 60 seconds (30 attempts * 2s)
+        await sleep(2000); // Wait 2 seconds between polls
+        
+        const statusResponse = await fetch(`${apiUrl}/render/${renderId}`, {
+            headers: { 'x-api-key': apiKey }
+        });
+        
+        if (!statusResponse.ok) {
+            throw new Error(`Failed to get render status: ${statusResponse.statusText}`);
+        }
+        
+        const { response: statusResponseBody } = await statusResponse.json();
+        status = statusResponseBody.status;
+        
+        if (status === 'done') {
+            resultUrl = statusResponseBody.url;
+        } else if (status === 'failed') {
+            const renderError = statusResponseBody.error || "Unknown render failure.";
+            console.error("Shotstack render failed:", statusResponseBody);
+            throw new Error(`Render failed: ${renderError}`);
+        }
+        
+        attempts++;
+    }
+
+    if (status !== 'done' || !resultUrl) {
+      throw new Error('GIF rendering timed out or failed to produce a URL.');
+    }
+
+    // 3. Return the final GIF URL
+    return { gifUrl: resultUrl };
+  }
+);

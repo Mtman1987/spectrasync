@@ -56,7 +56,7 @@ export function AppSidebar() {
   
   const handleGuildChange = (newGuildId: string) => {
       if (newGuildId !== selectedGuild) {
-        setSelectedGuild(newGuildId);
+        void setSelectedGuild(newGuildId);
       }
   }
 

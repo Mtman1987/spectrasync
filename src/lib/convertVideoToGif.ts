@@ -1,5 +1,9 @@
 import path from "node:path"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+
+import { getAdminApp } from "@/lib/firebase-admin"
+import { getStorage } from "firebase-admin/storage"
 
 export interface ConvertMp4ToGifOptions {
   /** Target width for the generated GIF. Defaults to 240 pixels. */
@@ -10,15 +14,21 @@ export interface ConvertMp4ToGifOptions {
   fps?: number
   /** Loop behaviour for the GIF. `0` = infinite loop. */
   loop?: number
+  /** Optional explicit storage object path (within the bucket). */
+  storagePath?: string
 }
 
 export interface ConvertMp4ToGifResult {
-  /** Absolute path to the generated GIF file. */
-  outputPath: string
+  /** Location of the GIF in Cloud Storage if uploaded. */
+  storagePath: string | null
+  /** Signed URL to access the GIF when one is generated. */
+  downloadUrl: string | null
   /** Duration of the source clip in seconds, if provided by the API. */
   durationSeconds: number
   /** Additional metadata returned by the conversion API, if any. */
   metadata: Record<string, unknown> | null
+  /** Raw GIF bytes for callers that need to stream or attach directly. */
+  buffer: Buffer
 }
 
 const DEFAULT_WIDTH = 240
@@ -74,12 +84,48 @@ async function requestShotstackConversion(payload: Record<string, unknown>) {
   }
 }
 
+async function uploadToStorage(gifBuffer: Buffer, destinationPath: string): Promise<{ storagePath: string; downloadUrl: string | null }> {
+  try {
+    const app = getAdminApp()
+    const bucketName = process.env.FIREBASE_STORAGE_BUCKET ?? app.options.storageBucket
+    if (!bucketName) {
+      throw new Error('No Firebase storage bucket configured')
+    }
+
+    const bucket = getStorage(app).bucket(bucketName)
+    const file = bucket.file(destinationPath)
+    await file.save(gifBuffer, {
+      contentType: 'image/gif',
+      resumable: false,
+      metadata: {
+        cacheControl: 'public, max-age=31536000',
+      },
+    })
+
+    let downloadUrl: string | null = null
+    try {
+      const [signedUrl] = await file.getSignedUrl({
+        action: 'read',
+        expires: Date.now() + 1000 * 60 * 60 * 24 * 7, // 7 days
+      })
+      downloadUrl = signedUrl ?? null
+    } catch (signedUrlError) {
+      console.warn('[convertVideoToGif] Failed to create signed URL for GIF.', signedUrlError)
+    }
+
+    return { storagePath: `${bucketName}/${destinationPath}`, downloadUrl }
+  } catch (error) {
+    console.warn('[convertVideoToGif] Falling back to local filesystem write � storage upload failed.', error)
+    return { storagePath: '', downloadUrl: null }
+  }
+}
+
 export async function convertMp4ToGif(
   inputPath: string,
   outputPath: string,
   options: ConvertMp4ToGifOptions = {},
 ): Promise<ConvertMp4ToGifResult> {
-  const { width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT, fps = DEFAULT_FPS, loop = DEFAULT_LOOP } = options
+  const { width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT, fps = DEFAULT_FPS, loop = DEFAULT_LOOP, storagePath } = options
 
   const inputBuffer = await readFile(inputPath)
 
@@ -96,12 +142,27 @@ export async function convertMp4ToGif(
 
   const gifBuffer = Buffer.from(response.gifBase64, 'base64')
 
-  await ensureDirectoryForFile(outputPath)
-  await writeFile(outputPath, gifBuffer)
+  const desiredPath =
+    storagePath ?? `generated-gifs/${new Date().getUTCFullYear()}/${new Date().getUTCMonth() + 1}/${randomUUID()}.gif`
+
+  let storageUploadPath: string | null = null
+  let downloadUrl: string | null = null
+
+  const uploadResult = await uploadToStorage(gifBuffer, desiredPath)
+  if (uploadResult.storagePath) {
+    storageUploadPath = uploadResult.storagePath
+    downloadUrl = uploadResult.downloadUrl
+  } else {
+    await ensureDirectoryForFile(outputPath)
+    await writeFile(outputPath, gifBuffer)
+    storageUploadPath = path.resolve(outputPath)
+  }
 
   return {
-    outputPath: path.resolve(outputPath),
+    storagePath: storageUploadPath,
+    downloadUrl,
     durationSeconds: response.durationSeconds ?? 0,
     metadata: response.metadata ?? null,
+    buffer: gifBuffer,
   }
 }

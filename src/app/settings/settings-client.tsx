@@ -7,8 +7,8 @@ import { AppLayout } from "@/components/layout/app-layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Settings, UserPlus, Webhook, Trash, Link2, PlusCircle, Coins } from "lucide-react";
-import { getAdminInfo, saveAdminTwitchInfo, addVip, addPointsToAdmin } from "@/app/actions";
+import { Loader2, Settings, UserPlus, Webhook, Trash, PlusCircle, Coins } from "lucide-react";
+import { getAdminInfo, addVip, addPointsToAdmin } from "@/app/actions";
 import { addWebhook, getWebhooks, deleteWebhook, testGifWebhook, type Webhook as WebhookType, getSettings, saveSettings } from "@/app/settings/actions";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -17,8 +17,7 @@ import { Label } from "@/components/ui/label";
 import { PointSystemForm } from "@/app/settings/point-system-form";
 import { ClipSettingsForm } from "@/app/settings/clip-settings-form";
 import { useRouter } from "next/navigation";
-import { Twitch } from "@/components/icons";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { AdminAccountCard } from "@/components/admin-account-card";
 import { useCommunity } from "@/context/community-context";
 
 function AddWebhookForm({ guildId, onWebhookAdded }: { guildId: string, onWebhookAdded: () => void }) {
@@ -369,50 +368,6 @@ function DevToolsCard({ guildId, adminId }: { guildId: string, adminId: string |
 }
 
 
-function LinkTwitchForm({ adminId, onTwitchLinked }: { adminId: string; onTwitchLinked: () => void }) {
-    const { toast } = useToast();
-    const [username, setUsername] = useState("");
-    const [isPending, startTransition] = useTransition();
-
-    const handleLink = () => {
-        if (!username) {
-            toast({ title: "Twitch username required", variant: "destructive" });
-            return;
-        }
-
-        startTransition(async () => {
-            const result = await saveAdminTwitchInfo(adminId, username.trim());
-            if (result.success) {
-                toast({ title: "Twitch Linked!", description: "Your admin profile has been updated." });
-                setUsername("");
-                onTwitchLinked();
-            } else {
-                toast({ title: "Error", description: result.error, variant: "destructive" });
-            }
-        });
-    };
-
-    return (
-        <div className="border rounded-lg p-4 space-y-3">
-            <p className="text-sm text-muted-foreground">
-                Link your Twitch account to unlock live activity tracking and raid notifications.
-            </p>
-            <div className="flex flex-col sm:flex-row gap-2">
-                <Input
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    placeholder="Twitch username"
-                    className="sm:flex-1"
-                />
-                <Button onClick={handleLink} disabled={isPending}>
-                    {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    Link Twitch
-                </Button>
-            </div>
-        </div>
-    );
-}
-
 export function SettingsClientPage({ guildId, initialCommunityInfo }: { guildId: string, initialCommunityInfo: any }) {
     const router = useRouter();
     const { adminId } = useCommunity();
@@ -447,49 +402,13 @@ export function SettingsClientPage({ guildId, initialCommunityInfo }: { guildId:
                 </div>
                 
                  <div className="grid gap-6 lg:grid-cols-2">
-                     <Card>
-                        <CardHeader>
-                            <CardTitle className="text-lg">Account Linking</CardTitle>
-                             <CardDescription>
-                                Manage your connected Discord and Twitch accounts.
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            {adminProfile?.discordInfo && (
-                                <div className="flex items-center gap-4 p-2 border rounded-lg">
-                                    <Avatar>
-                                        <AvatarImage src={adminProfile.discordInfo.avatar || undefined} />
-                                        <AvatarFallback>{adminProfile.discordInfo.username.charAt(0)}</AvatarFallback>
-                                    </Avatar>
-                                    <div>
-                                        <p className="font-bold">{adminProfile.discordInfo.username}</p>
-                                        <p className="text-xs text-muted-foreground">Discord Linked</p>
-                                    </div>
-                                </div>
-                            )}
-
-                             {adminProfile?.twitchInfo ? (
-                                <div className="flex items-center gap-4 p-2 border rounded-lg">
-                                     <Avatar>
-                                        <AvatarImage src={adminProfile.twitchInfo.avatar || undefined} />
-                                        <AvatarFallback>{adminProfile.twitchInfo.displayName.charAt(0)}</AvatarFallback>
-                                    </Avatar>
-                                    <div>
-                                        <p className="font-bold">{adminProfile.twitchInfo.displayName}</p>
-                                        <p className="text-xs text-muted-foreground">Twitch Linked</p>
-                                    </div>
-                                </div>
-                            ) : adminId ? (
-                                <LinkTwitchForm adminId={adminId} onTwitchLinked={() => fetchAdminProfile(adminId)} />
-                            ) : null}
-                        </CardContent>
-                         <CardFooter>
-                            <Button onClick={handleLinkDiscord}>
-                                <Link2 className="mr-2" />
-                                Re-Link Discord
-                            </Button>
-                        </CardFooter>
-                    </Card>
+                     <AdminAccountCard
+                        adminId={adminId}
+                        discordInfo={adminProfile?.discordInfo ?? null}
+                        twitchInfo={adminProfile?.twitchInfo ?? null}
+                        onTwitchChanged={adminId ? () => fetchAdminProfile(adminId) : undefined}
+                        onDiscordRelink={handleLinkDiscord}
+                    />
 
                     <PointSystemForm />
                     <ClipSettingsForm />

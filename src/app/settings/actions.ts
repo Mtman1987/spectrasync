@@ -6,7 +6,7 @@ import type { ConvertMp4ToGifOptions } from "@/lib/convertVideoToGif";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFile, writeFile, unlink } from "node:fs/promises";
+import { writeFile, unlink } from "node:fs/promises";
 
 export type CommunitySettings = {
     // App Base URL
@@ -222,8 +222,7 @@ export async function testGifWebhook({
     }
 
     const tempInputPath = join(tmpdir(), `gif-test-${randomUUID()}.mp4`);
-    const tempOutputPath = join(tmpdir(), `gif-test-${randomUUID()}.gif`);
-    let resolvedOutputPath: string | undefined;
+    const storageObjectPath = `webhook-previews/${guildId}/${randomUUID()}.gif`;
 
     try {
         const response = await fetch(mp4Url);
@@ -241,14 +240,12 @@ export async function testGifWebhook({
         const { convertMp4ToGif } = await import("@/lib/convertVideoToGif");
 
         const conversionOptions = Object.fromEntries(
-            Object.entries({ width, height, fps, loop }).filter(([, value]) => value !== undefined)
+            Object.entries({ width, height, fps, loop, storagePath: storageObjectPath }).filter(([, value]) => value !== undefined)
         ) as ConvertMp4ToGifOptions;
 
-        const conversion = await convertMp4ToGif(tempInputPath, tempOutputPath, conversionOptions);
-        resolvedOutputPath = conversion.outputPath;
-        const gifBuffer = await readFile(resolvedOutputPath);
+        const conversion = await convertMp4ToGif(tempInputPath, storageObjectPath, conversionOptions);
 
-        const blob = new Blob([gifBuffer], { type: 'image/gif' });
+        const blob = new Blob([conversion.buffer], { type: 'image/gif' });
         const formData = new FormData();
         formData.append('content', `GIF conversion test triggered from Cosmic Raid settings. Source: ${mp4Url}`);
         formData.append('file', blob, 'cosmic-raid-preview.gif');
@@ -281,19 +278,6 @@ export async function testGifWebhook({
             await unlink(tempInputPath);
         } catch {
             // ignore cleanup errors
-        }
-        if (resolvedOutputPath) {
-            try {
-                await unlink(resolvedOutputPath);
-            } catch {
-                // ignore cleanup errors
-            }
-        } else {
-            try {
-                await unlink(tempOutputPath);
-            } catch {
-                // ignore cleanup errors when conversion fails before writing output
-            }
         }
     }
 }

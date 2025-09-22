@@ -1,7 +1,6 @@
-
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
     Avatar,
@@ -19,54 +18,23 @@ import {
   } from "@/components/ui/dropdown-menu"
 import { useSidebar } from "../ui/sidebar";
 import { cn } from "@/lib/utils";
-import { getAdminInfo } from "@/app/actions";
 import { Skeleton } from "../ui/skeleton";
 import { useCommunity } from "@/context/community-context";
-
-type UserProfile = {
-  discordInfo?: {
-    id: string;
-    username: string;
-    avatar: string;
-  };
-  twitchInfo?: {
-    id: string;
-    login: string;
-    displayName: string;
-    avatar: string;
-  };
-}
 
 export function UserNav() {
   const router = useRouter();
   const { state } = useSidebar();
-  const [user, setUser] = useState<UserProfile | null>(null);
-  const { adminId, loading: communityLoading, setAdminId, setSelectedGuild } = useCommunity();
-    
-  useEffect(() => {
-    const fetchUser = async () => {
-      if (adminId) {
-        const { value } = await getAdminInfo(adminId);
-        if (value) {
-            setUser(value);
-        } else {
-            setUser(null);
-        }
-      } else {
-        setUser(null);
-      }
-    };
+  const { adminId, adminProfile, loading: communityLoading, setAdminId, setSelectedGuild, refreshAdminProfile } = useCommunity();
 
-    if (!communityLoading) {
-        fetchUser();
+  useEffect(() => {
+    if (!communityLoading && adminId && !adminProfile) {
+      void refreshAdminProfile(adminId);
     }
-  }, [adminId, communityLoading]);
+  }, [adminId, adminProfile, communityLoading, refreshAdminProfile]);
 
   const handleLogout = () => {
-    // Clear the context state, which will also clear localStorage
     setAdminId(null);
-    setSelectedGuild(null);
-    // The redirect will be handled by the page logic now
+    void setSelectedGuild(null);
     router.push('/');
   }
 
@@ -82,14 +50,24 @@ export function UserNav() {
     )
   }
 
-  if (!user?.discordInfo) {
-     return null;
+  const discordInfo = adminProfile?.discordInfo ?? null;
+  const twitchInfo = adminProfile?.twitchInfo ?? null;
+
+  if (!discordInfo) {
+     return (
+      <Button
+        variant="ghost"
+        className={cn("flex items-center gap-2 p-2 w-full h-auto", state === 'collapsed' && 'w-auto aspect-square justify-center h-10')}
+        onClick={() => router.push('/api/auth/discord')}
+      >
+        <span className={cn(state === 'collapsed' && 'hidden')}>Link Discord</span>
+      </Button>
+     );
   }
     
-  const displayUser = user.discordInfo;
-  const displayName = user.twitchInfo?.displayName || displayUser.username;
-  const displaySubtext = user.twitchInfo?.login || user.discordInfo.username;
-  const displayAvatar = user.twitchInfo?.avatar || displayUser.avatar;
+  const displayName = twitchInfo?.displayName || discordInfo.username;
+  const displaySubtext = twitchInfo ? `@${twitchInfo.login}` : discordInfo.username;
+  const displayAvatar = twitchInfo?.avatar || discordInfo.avatar;
 
   return (
     <DropdownMenu>
@@ -108,6 +86,7 @@ export function UserNav() {
       <DropdownMenuContent className="w-56" align="end" forceMount>
         <DropdownMenuLabel>My Account</DropdownMenuLabel>
         <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => router.push('/settings')}>Account Settings</DropdownMenuItem>
         <DropdownMenuItem onClick={handleLogout}>Logout</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

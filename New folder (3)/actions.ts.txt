@@ -1,97 +1,251 @@
 
-
 // src/app/actions.ts
 'use server';
 
 import { getAdminDb } from '@/lib/firebase-admin';
-import { FieldValue } from 'firebase-admin/firestore';
-import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, FieldPath, Timestamp } from 'firebase-admin/firestore';
 import type { LiveUser } from './raid-pile/types';
 import { getSettings } from './settings/actions';
-import { getTwitchUserByUsername, getTwitchStreams, getTwitchClips } from '@/lib/twitch';
 
 
+// --- DISCORD API ACTIONS ---
 
-const DISCORD_API_BASE = 'https://discord.com/api/v10';
-
-type DiscordRestUser = {
-  id: string;
-  username: string;
-  avatar?: string | null;
-};
-
-type DiscordRestGuild = {
-  id: string;
-  name: string;
-  icon?: string | null;
-};
-
-export async function getDiscordUser(discordId: string): Promise<{ id: string; username: string; avatar: string | null } | null> {
-  if (!discordId) {
-    return null;
-  }
-  const botToken = process.env.DISCORD_BOT_TOKEN;
-  if (!botToken) {
-    console.error('[getDiscordUser] Discord bot token is not configured.');
-    return null;
-  }
-  try {
-    const response = await fetch(`${DISCORD_API_BASE}/users/${discordId}`, {
-      headers: {
-        Authorization: `Bot ${botToken}`,
-      },
-    });
-
-    if (!response.ok) {
-      console.error(`[getDiscordUser] Discord API error ${response.status}: ${await response.text()}`);
-      return null;
+/**
+ * Fetches a Discord user's profile using the bot token.
+ * This is a server-to-server call and does not require OAuth2.
+ */
+export async function getDiscordUser(discordId: string): Promise<{ id: string, username: string, avatar: string | null } | null> {
+    if (!process.env.DISCORD_BOT_TOKEN) {
+        console.error("Discord Bot Token is not configured in environment variables.");
+        return null;
     }
+    try {
+        const url = `https://discord.com/api/v10/users/${discordId}`;
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bot ${process.env.DISCORD_BOT_TOKEN}`
+            }
+        });
 
-    const payload = (await response.json()) as DiscordRestUser;
-    return {
-      id: payload.id,
-      username: payload.username,
-      avatar: payload.avatar ? `https://cdn.discordapp.com/avatars/${payload.id}/${payload.avatar}.png` : null,
-    };
-  } catch (error) {
-    console.error(`[getDiscordUser] Failed to fetch Discord user ${discordId}:`, error);
-    return null;
-  }
+        if (!response.ok) {
+            console.error(`Discord API error (getUser): ${response.status} ${await response.text()}`);
+            return null;
+        }
+
+        const userData = await response.json();
+        return {
+            id: userData.id,
+            username: userData.username,
+            avatar: userData.avatar ? `https://cdn.discordapp.com/avatars/${userData.id}/${userData.avatar}.png` : null,
+        };
+
+    } catch (error) {
+        console.error("Error fetching Discord user:", error);
+        return null;
+    }
 }
 
-export async function getGuildDetails(guildId: string): Promise<{ id: string; name: string; icon: string | null } | null> {
-  if (!guildId) {
-    return null;
-  }
-  const botToken = process.env.DISCORD_BOT_TOKEN;
-  if (!botToken) {
-    console.error('[getGuildDetails] Discord bot token is not configured.');
-    return null;
-  }
-  try {
-    const response = await fetch(`${DISCORD_API_BASE}/guilds/${guildId}`, {
-      headers: {
-        Authorization: `Bot ${botToken}`,
-      },
+/**
+ * Fetches details for a specific Discord guild (server) using the bot token.
+ */
+export async function getGuildDetails(guildId: string): Promise<{ id: string, name: string, icon: string | null } | null> {
+     if (!process.env.DISCORD_BOT_TOKEN) {
+        console.error("Discord Bot Token is not configured.");
+        return null;
+    }
+     if (!guildId) return null;
+
+    try {
+        const url = `https://discord.com/api/v10/guilds/${guildId}`;
+        const response = await fetch(url, {
+            headers: { 'Authorization': `Bot ${process.env.DISCORD_BOT_TOKEN}` },
+             next: { revalidate: 3600 } // Cache the result for 1 hour
+        });
+        if (!response.ok) {
+            console.error(`Discord API error (getGuildDetails for ${guildId}): ${response.status} ${await response.text()}`);
+            // Return a fallback so the UI doesn't break
+            return { id: guildId, name: `Guild ${guildId.slice(-4)}`, icon: null };
+        }
+        const guildData = await response.json();
+        const iconUrl = guildData.icon ? `https://cdn.discordapp.com/icons/${guildData.id}/${guildData.icon}.png` : null;
+
+        return {
+            id: guildData.id,
+            name: guildData.name,
+            icon: iconUrl,
+        };
+    } catch (error) {
+        console.error(`Error fetching guild details for ${guildId}:`, error);
+        return { id: guildId, name: `Guild ${guildId.slice(-4)}`, icon: null };
+    }
+}
+
+
+// --- TWITCH API ACTIONS ---
+
+let appAccessToken: { token: string, expires_at: number } | null = null;
+
+async function getTwitchAppAccessToken() {
+    if (appAccessToken && Date.now() < appAccessToken.expires_at) {
+        return appAccessToken.token;
+    }
+
+    if (!process.env.TWITCH_CLIENT_ID || !process.env.TWITCH_CLIENT_SECRET) {
+        throw new Error("Twitch client ID or secret is not configured in environment variables.");
+    }
+
+    const url = `https://id.twitch.tv/oauth2/token?client_id=${process.env.TWITCH_CLIENT_ID}&client_secret=${process.env.TWITCH_CLIENT_SECRET}&grant_type=client_credentials`;
+    const response = await fetch(url, { method: 'POST' });
+    const data = await response.json();
+
+    if (!response.ok) {
+        throw new Error(`Failed to get Twitch app access token: ${data.message || 'Unknown error'}`);
+    }
+
+    appAccessToken = {
+        token: data.access_token,
+        expires_at: Date.now() + (data.expires_in * 1000)
+    };
+
+    return appAccessToken.token;
+}
+
+export async function getTwitchUserByUsername(username: string): Promise<{ id: string, login: string, display_name: string, profile_image_url: string } | null> {
+    if (!process.env.TWITCH_CLIENT_ID) {
+        console.error("Twitch Client ID is not set.");
+        return null;
+    }
+    try {
+        const accessToken = await getTwitchAppAccessToken();
+        const url = `https://api.twitch.tv/helix/users?login=${username.toLowerCase()}`;
+        
+        const response = await fetch(url, {
+            headers: {
+                'Client-ID': process.env.TWITCH_CLIENT_ID,
+                'Authorization': `Bearer ${accessToken}`
+            }
+        });
+
+        if (!response.ok) {
+            console.error(`Twitch API error: ${response.status} ${await response.text()}`);
+            return null;
+        }
+
+        const data = await response.json();
+
+        if (data.data && data.data.length > 0) {
+            return data.data[0];
+        } else {
+            return null;
+        }
+    } catch (error) {
+        console.error("Error fetching Twitch user by username:", error);
+        return null;
+    }
+}
+
+
+export async function getTwitchStreams(userIds: string[]): Promise<any[]> {
+    if (userIds.length === 0) return [];
+
+    if (!process.env.TWITCH_CLIENT_ID) {
+        console.error("Twitch Client ID is not set.");
+        return [];
+    }
+    try {
+        const accessToken = await getTwitchAppAccessToken();
+        const params = new URLSearchParams();
+        userIds.forEach(id => params.append('user_id', id));
+        
+        const url = `https://api.twitch.tv/helix/streams?${params.toString()}`;
+        
+        const response = await fetch(url, {
+            headers: {
+                'Client-ID': process.env.TWITCH_CLIENT_ID,
+                'Authorization': `Bearer ${accessToken}`
+            }
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`Twitch API error (getStreams): ${response.status} - ${errorText}`);
+            // Return empty array but log the error for diagnosis
+            return [];
+        }
+
+        const data = await response.json();
+        return data.data || [];
+
+    } catch (error) {
+        console.error("Error fetching Twitch streams:", error);
+        return [];
+    }
+}
+
+export async function getClipById(clipId: string): Promise<any> {
+    if (!process.env.TWITCH_CLIENT_ID) {
+        throw new Error('Twitch Client ID is not set.');
+    }
+    const accessToken = await getTwitchAppAccessToken();
+    const url = `https://api.twitch.tv/helix/clips?id=${clipId}`;
+    const response = await fetch(url, {
+        headers: {
+            'Client-ID': process.env.TWITCH_CLIENT_ID,
+            'Authorization': `Bearer ${accessToken}`
+        }
     });
 
     if (!response.ok) {
-      console.error(`[getGuildDetails] Discord API error ${response.status}: ${await response.text()}`);
-      const fallbackName = guildId.length >= 4 ? `Guild ${guildId.slice(-4)}` : `Guild ${guildId}`;
-      return { id: guildId, name: fallbackName, icon: null };
+        throw new Error(`Twitch API error (getClipById): ${response.status} ${await response.text()}`);
     }
 
-    const payload = (await response.json()) as DiscordRestGuild;
-    return {
-      id: payload.id,
-      name: payload.name,
-      icon: payload.icon ? `https://cdn.discordapp.com/icons/${payload.id}/${payload.icon}.png` : null,
-    };
-  } catch (error) {
-    console.error(`[getGuildDetails] Failed to fetch guild ${guildId}:`, error);
-    const fallbackName = guildId.length >= 4 ? `Guild ${guildId.slice(-4)}` : `Guild ${guildId}`;
-    return { id: guildId, name: fallbackName, icon: null };
-  }
+    const data = await response.json();
+    if (!data.data || data.data.length === 0) {
+        throw new Error(`Clip with ID ${clipId} not found.`);
+    }
+
+    const clip = data.data[0];
+    
+    // This is the correct, reliable way to get the video URL
+    const videoUrl = clip.thumbnail_url.replace(/-preview-.*\.jpg$/, '.mp4');
+    
+    if (!videoUrl) {
+        throw new Error("Could not construct video URL from thumbnail.");
+    }
+    
+    return { ...clip, video_url: videoUrl };
+}
+
+export async function getTwitchClips(broadcasterId: string, limit = 5): Promise<any[]> {
+     if (!process.env.TWITCH_CLIENT_ID) {
+        console.error("Twitch Client ID is not set.");
+        return [];
+    }
+    try {
+        const accessToken = await getTwitchAppAccessToken();
+        const startedAt = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(); // last 7 days
+
+        const url = `https://api.twitch.tv/helix/clips?broadcaster_id=${broadcasterId}&first=${limit}&started_at=${startedAt}`;
+        
+        const response = await fetch(url, {
+            headers: {
+                'Client-ID': process.env.TWITCH_CLIENT_ID,
+                'Authorization': `Bearer ${accessToken}`
+            }
+        });
+
+        if (!response.ok) {
+            console.error(`Twitch API error (getClips): ${response.status} ${await response.text()}`);
+            return [];
+        }
+
+        const data = await response.json();
+        return data.data || [];
+
+    } catch (error) {
+        console.error("Error fetching Twitch clips:", error);
+        return [];
+    }
 }
 
 
@@ -193,6 +347,29 @@ export async function getAdminInfo(discordId: string): Promise<{ value: any | nu
 }
 
 /**
+ * Adds a new guild to the admin's list of manageable guilds.
+ * This function now expects the full guild object to be passed in.
+ */
+export async function addManagedGuild(adminDiscordId: string, newGuild: { id: string, name: string, icon: string | null }) {
+    if (!adminDiscordId || !newGuild || !newGuild.id) {
+        return { success: false, error: "Admin ID and Guild Info are required." };
+    }
+    try {
+        const adminDb = getAdminDb();
+        const adminRef = adminDb.collection('admins').doc(adminDiscordId);
+        await adminRef.update({
+            discordUserGuilds: FieldValue.arrayUnion(newGuild)
+        });
+        
+        return { success: true, message: `Successfully added "${newGuild.name}" to your managed communities.` };
+    } catch (e) {
+        const errorMessage = e instanceof Error ? e.message : String(e);
+        return { success: false, error: errorMessage };
+    }
+}
+
+
+/**
  * Retrieves the currently selected guild for the admin from their global admin document.
  */
 export async function getSelectedGuildId(adminDiscordId: string): Promise<string | null> {
@@ -209,12 +386,6 @@ export async function getSelectedGuildId(adminDiscordId: string): Promise<string
         return null;
     }
 }
-
-
-// --- TWITCH-RELATED ACTIONS ---
-// Note: The core Twitch API functions have been moved to src/bot/twitch-actions.ts
-// to ensure they can be used by both the bot and the web app without bundling issues.
-export { getTwitchUserByUsername, getTwitchStreams, getTwitchClips };
 
 
 /**
@@ -322,18 +493,19 @@ export async function getUsersFromDb(guildId: string, userIds: string[]): Promis
     
     return userDocs.docs.map(doc => {
         const data = doc.data();
-        // Fallback to discordInfo if twitchInfo is partial
         const twitchInfo = data.twitchInfo || {};
         const discordInfo = data.discordInfo || {};
         return {
+            discordId: discordInfo.id,
             twitchId: twitchInfo.id,
-            twitchLogin: twitchInfo.login || discordInfo.username,
-            displayName: twitchInfo.displayName || discordInfo.username,
-            avatarUrl: twitchInfo.avatar || discordInfo.avatar,
+            twitchLogin: twitchInfo.login,
+            displayName: twitchInfo.displayName,
+            avatarUrl: twitchInfo.avatar,
             latestGameName: '', // This will be filled by Twitch data
             latestViewerCount: 0, // This will be filled by Twitch data
             vipMessage: data.vipMessage || undefined,
             points: data.points || 0,
+            lastHeldRaidPile: data.lastHeldRaidPile || undefined
         }
     });
 }
@@ -350,107 +522,49 @@ export async function getLiveRaidPiles(guildId: string) {
         if (usersSnapshot.empty) {
             return [];
         }
-
-        type RaidPileUserMeta = {
-            docRef: DocumentReference;
-            lastHeldRaidPile: Timestamp | Date | string | null;
-        };
-
-        const userMetaByTwitchId = new Map<string, RaidPileUserMeta>();
-
-        for (const doc of usersSnapshot.docs) {
-            const data = doc.data();
-            const twitchId = data.twitchInfo?.id;
-            if (twitchId) {
-                userMetaByTwitchId.set(twitchId, {
-                    docRef: doc.ref as DocumentReference,
-                    lastHeldRaidPile: (data.lastHeldRaidPile ?? null) as Timestamp | Date | string | null,
-                });
-            }
-        }
-
-        const userIds = Array.from(userMetaByTwitchId.keys());
-
+        
+        const userIds = usersSnapshot.docs.map(doc => doc.data().twitchInfo?.id).filter(Boolean);
+        
         if (userIds.length === 0) {
             console.log("Found users in pile, but they are missing Twitch IDs.");
             return [];
         }
-
+        
         const [dbUsers, liveTwitchData] = await Promise.all([
              getUsersFromDb(guildId, userIds),
              getLiveUsersFromTwitch(userIds)
-        ]);
-
-        const preparedUsers = dbUsers.map(user => {
-            const twitchData = liveTwitchData[user.twitchId];
-            if (!twitchData) return null;
-
-            const meta = userMetaByTwitchId.get(user.twitchId);
-            return {
-                user: { ...user, ...twitchData } as LiveUser,
-                docRef: meta?.docRef ?? null,
-                lastHeldRaidPile: meta?.lastHeldRaidPile ?? null,
-            };
-        }).filter((entry): entry is { user: LiveUser; docRef: DocumentReference | null; lastHeldRaidPile: Timestamp | Date | string | null } => entry !== null);
-
-        if (preparedUsers.length === 0) {
-            return [];
-        }
-
-        const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
-
-        const toMillis = (value: Timestamp | Date | string | null) => {
-            if (!value) return null;
-            if (typeof (value as Timestamp).toMillis === 'function') {
-                try {
-                    return (value as Timestamp).toMillis();
-                } catch (timestampError) {
-                    console.warn("[getLiveRaidPiles] Failed to convert Firestore Timestamp.", timestampError);
-                    return null;
-                }
-            }
-
-            if (value instanceof Date) {
-                return value.getTime();
-            }
-
-            const parsed = Date.parse(String(value));
-            return Number.isNaN(parsed) ? null : parsed;
-        };
-
-        const sortByStartedAt = (a: LiveUser, b: LiveUser) => {
-            const parseStart = (user: LiveUser) => {
-                if (!user.started_at) {
-                    return Number.POSITIVE_INFINITY;
-                }
-                const parsed = Date.parse(user.started_at);
-                return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
-            };
-            return parseStart(a) - parseStart(b);
-        };
-
-        const fairnessEligible = preparedUsers.filter(entry => {
-            const lastHeldMs = toMillis(entry.lastHeldRaidPile);
-            return lastHeldMs === null || lastHeldMs < cutoff;
+        ]).catch(err => {
+            console.error("Error fetching data for raid pile:", err);
+            return [[], {}]; // Return empty arrays on error
         });
+        
+        const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
 
-        const prioritizedEntries = (fairnessEligible.length > 0 ? fairnessEligible : preparedUsers).slice().sort((a, b) => sortByStartedAt(a.user, b.user));
+        const liveUsers = dbUsers.map(user => {
+            const twitchData = liveTwitchData[user.twitchId];
+            return twitchData ? { ...user, ...twitchData } : null;
+        }).filter((u): u is LiveUser => u !== null)
+         .filter(user => {
+             if (!user.lastHeldRaidPile) return true; // Always include if they've never been holder
+             const lastHeldMs = (user.lastHeldRaidPile as unknown as Timestamp).toMillis();
+             return lastHeldMs < threeDaysAgo;
+         })
+         .sort((a, b) => a.latestViewerCount - b.latestViewerCount);
+        
+        let holder = liveUsers.length > 0 ? liveUsers[0] : null;
 
-        const holderEntry = prioritizedEntries[0] ?? null;
-
-        if (holderEntry?.docRef) {
-            try {
-                await holderEntry.docRef.update({ lastHeldRaidPile: FieldValue.serverTimestamp() });
-            } catch (updateError) {
-                console.error("Failed to update lastHeldRaidPile for holder:", updateError);
+        if (holder) {
+            const holderUserRef = db.collection(`communities/${guildId}/users`).where('twitchInfo.id', '==', holder.twitchId);
+            const holderSnapshot = await holderUserRef.get();
+            if(!holderSnapshot.empty) {
+                const holderDocRef = holderSnapshot.docs[0].ref;
+                await holderDocRef.update({ lastHeldRaidPile: FieldValue.serverTimestamp() });
             }
         }
-
-        const liveUsers = prioritizedEntries.map(entry => entry.user);
-
+        
         const pile = {
-            holder: liveUsers.length > 0 ? liveUsers[0] : null,
-            liveUsers,
+            holder: holder,
+            liveUsers: liveUsers,
             totalViewers: liveUsers.reduce((sum, user) => sum + user.latestViewerCount, 0),
         };
 
@@ -474,7 +588,7 @@ export async function getLiveCommunityPoolUsers(guildId: string): Promise<LiveUs
             return [];
         }
 
-        const userIds = usersSnapshot.docs.map(doc => doc.data().twitchInfo?.id).filter(Boolean);
+        const userIds = usersSnapshot.docs.map(doc => doc.data().twitchInfo.id).filter(Boolean);
         const [dbUsers, liveTwitchData] = await Promise.all([
              getUsersFromDb(guildId, userIds),
              getLiveUsersFromTwitch(userIds)
@@ -608,24 +722,31 @@ export async function addVip(guildId: string, twitchUsername: string, vipMessage
             return { success: false, error: `Could not find a Twitch user with the username "${twitchUsername}".` };
         }
 
-        // We need to find the user's Discord ID to correctly update their document.
-        // This assumes the user has already interacted with the bot and has an entry.
         const userQuery = await db.collection(`communities/${guildId}/users`).where('twitchInfo.id', '==', twitchUser.id).limit(1).get();
         
-        let userRef;
         if (userQuery.empty) {
-            // If the user doesn't exist, we can't make them a VIP through this flow yet.
-            // A more robust implementation might create a shell user document here.
-            return { success: false, error: "Cannot make a user a VIP until they have linked their account via the bot." };
+            // User doesn't exist, create them. We use their Twitch ID as the document ID for consistency.
+            const newUserRef = db.collection(`communities/${guildId}/users`).doc(twitchUser.id);
+            await newUserRef.set({
+                twitchInfo: {
+                    id: twitchUser.id,
+                    displayName: twitchUser.display_name,
+                    avatar: twitchUser.profile_image_url,
+                    login: twitchUser.login,
+                },
+                isVip: true,
+                vipMessage: vipMessage,
+                vipAddedAt: FieldValue.serverTimestamp(),
+            }, { merge: true });
         } else {
-            userRef = userQuery.docs[0].ref;
+            // User exists, update them.
+            const userRef = userQuery.docs[0].ref;
+            await userRef.set({
+                isVip: true,
+                vipMessage: vipMessage,
+                vipAddedAt: FieldValue.serverTimestamp(),
+            }, { merge: true });
         }
-
-        await userRef.set({
-            isVip: true,
-            vipMessage: vipMessage,
-            vipAddedAt: FieldValue.serverTimestamp(),
-        }, { merge: true });
 
         return { success: true, message: `${twitchUser.display_name} has been added as a VIP.` };
 
@@ -753,14 +874,19 @@ export async function addPointsToAdmin(guildId: string, adminDiscordId: string, 
     // An admin might not have a `users` document if they haven't linked their Twitch account via the bot flow yet.
     // We can create a shell document for them to add points to.
     if (!userDoc.exists) {
-        const { value: adminInfo } = await getAdminInfo(adminDiscordId);
-        if (adminInfo) {
+        // Attempt to get Discord user info to create a shell profile
+        const discordUser = await getDiscordUser(adminDiscordId);
+        if (discordUser) {
              await userRef.set({
-                discordInfo: adminInfo.discordInfo,
+                discordInfo: {
+                    id: discordUser.id,
+                    username: discordUser.username,
+                    avatar: discordUser.avatar,
+                },
                 points: pointsToAdd
              }, { merge: true });
         } else {
-            throw new Error("Could not find global admin profile to create user document.");
+            throw new Error("Could not find Discord profile to create user document.");
         }
     } else {
         await userRef.update({
@@ -775,4 +901,8 @@ export async function addPointsToAdmin(guildId: string, adminDiscordId: string, 
     return { success: false, error: errorMessage };
   }
 }
+
+    
+
+    
 

@@ -1,0 +1,26 @@
+1) Twitch log in not showing up in the footer of the sidebar
+2) fix vip embed and gif generator
+3) Fix raid pile embed to show holder with VIP card and GIF, and use the ASCII art leaderboard.
+4) Profile not showing up on live cards (e.g., VIP, raid pile).
+5) Figure out why embeds show as offline for some users.
+6) Fix Raid Train holder card to match VIP and Raid Pile cards.
+7) Fix Raid Train embed to use ASCII art leaderboard for consistency.
+8) Add rotating GIF showcase to Community Pool embed.
+9) Ensure Community Pool embed has consistent live display and leaderboard styling.
+
+---
+
+### Roadmap to Completion
+
+**Phase 1: Core Functionality & Data Display**
+- [x] **Fix #1 & #4:** Resolve the core issue of Twitch/Discord profiles not displaying correctly in the sidebar and on live cards.
+- [ ] **Fix #5:** Investigate and fix the bug causing Discord embeds to show as "offline" for some users, ensuring live data is always accurate.
+
+**Phase 2: Embed Consistency & Feature Parity**
+- [ ] **Fix #2:** Implement a reliable GIF generator for the VIP live embed.
+- [ ] **Fix #3:** Overhaul the Raid Pile embed to include the holder's VIP card (with GIF) and the standardized ASCII art leaderboard.
+- [ ] **Fix #6:** Update the Raid Train holder card to match the style and features (like the GIF) of the VIP and Raid Pile cards.
+- [ ] **Fix #7:** Replace the simple list-based leaderboard in the Raid Train embed with the consistent ASCII art version.
+
+**Phase 3: Final Polish**
+- [ ] **Fix #8 & #9:** Enhance the Community Pool embed by adding the rotating GIF showcase and ensuring its live display and leaderboard styles are consistent with all other app features.

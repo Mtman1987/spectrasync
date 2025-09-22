@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
@@ -23,17 +22,18 @@ type Notification = {
 export function AppHeader() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const { state } = useSidebar();
-  const { selectedGuild, adminGuilds } = useCommunity();
+  const { selectedGuild, adminGuilds, adminProfile } = useCommunity();
 
   const guildInfo = adminGuilds.find(g => g.id === selectedGuild);
+  const discordInfo = adminProfile?.discordInfo ?? null;
+  const twitchInfo = adminProfile?.twitchInfo ?? null;
 
   useEffect(() => {
     const fetchNotifications = async () => {
       if (selectedGuild) {
-        setNotifications([]); // Clear old notifications
+        setNotifications([]);
         const allNotifications: Notification[] = [];
 
-        // This is a fire-and-forget pattern for non-critical notifications.
         getTodaysAnnouncer(selectedGuild).then(todaysAnnouncer => {
            if (todaysAnnouncer) {
                 allNotifications.push({
@@ -96,7 +96,20 @@ export function AppHeader() {
       
       <div className="flex-1" />
 
-       <div className="flex items-center gap-2">
+       <div className="flex items-center gap-3">
+            {discordInfo && (
+              <div className="hidden sm:flex items-center gap-2 rounded-md border px-3 py-1.5">
+                <Avatar className="h-8 w-8">
+                  <AvatarImage src={twitchInfo?.avatar || discordInfo.avatar || undefined} data-ai-hint="account avatar" />
+                  <AvatarFallback>{(twitchInfo?.displayName || discordInfo.username).charAt(0)}</AvatarFallback>
+                </Avatar>
+                <div className="flex flex-col leading-tight">
+                  <span className="text-sm font-semibold">{twitchInfo?.displayName || discordInfo.username}</span>
+                  <span className="text-xs text-muted-foreground">@{twitchInfo?.login || discordInfo.username}</span>
+                </div>
+              </div>
+            )}
+
             <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                     <Button variant="outline" size="icon" className="relative">
