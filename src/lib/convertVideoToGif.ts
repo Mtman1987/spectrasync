@@ -1,55 +1,24 @@
 import path from "node:path"
-import { mkdir } from "node:fs/promises"
-import ffmpeg, { type FfprobeData } from "fluent-ffmpeg"
-import ffmpegInstaller from "@ffmpeg-installer/ffmpeg"
-
-ffmpeg.setFfmpegPath(ffmpegInstaller.path)
-
-const dynamicRequire = typeof module !== "undefined" && module.require ? module.require.bind(module) : (() => {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    return Function("return require")()
-  } catch {
-    return null
-  }
-})()
-
-const ffprobeInstaller = dynamicRequire ? dynamicRequire('@ffprobe-installer/ffprobe') as { path: string } | null : null
-
-if (ffprobeInstaller?.path) {
-  ffmpeg.setFfprobePath(ffprobeInstaller.path)
-} else {
-  console.warn('[convertVideoToGif] FFprobe binary not available. Some metadata features may be limited.')
-}
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 
 export interface ConvertMp4ToGifOptions {
-  /**
-   * Target width for the generated GIF. Defaults to 240 pixels.
-   */
+  /** Target width for the generated GIF. Defaults to 240 pixels. */
   width?: number
-  /**
-   * Target height for the generated GIF. Defaults to 135 pixels.
-   */
+  /** Target height for the generated GIF. Defaults to 135 pixels. */
   height?: number
-  /**
-   * Frames per second for the GIF animation. Defaults to 15 fps to balance
-   * fidelity and file size.
-   */
+  /** Frames per second for the GIF animation. Defaults to 15 fps. */
   fps?: number
-  /**
-   * Loop behaviour for the GIF. `0` means loop infinitely which matches Discord
-   * expectations for animated content.
-   */
+  /** Loop behaviour for the GIF. `0` = infinite loop. */
   loop?: number
 }
 
 export interface ConvertMp4ToGifResult {
   /** Absolute path to the generated GIF file. */
   outputPath: string
-  /** Duration of the source clip in seconds. */
+  /** Duration of the source clip in seconds, if provided by the API. */
   durationSeconds: number
-  /** Raw ffprobe metadata for callers that need more context. */
-  metadata: FfprobeData
+  /** Additional metadata returned by the conversion API, if any. */
+  metadata: Record<string, unknown> | null
 }
 
 const DEFAULT_WIDTH = 240
@@ -62,17 +31,47 @@ async function ensureDirectoryForFile(filePath: string) {
   await mkdir(directory, { recursive: true })
 }
 
-async function probeVideo(source: string): Promise<FfprobeData> {
-  return await new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(source, (error: unknown, data: FfprobeData) => {
-      if (error) {
-        reject(error)
-        return
-      }
+function resolveShotstackConfig() {
+  const baseUrl =
+    process.env.SHOTSTACK_API_BASE_URL ??
+    process.env.SHOTSTOCK_API_BASE_URL ??
+    process.env.SHOTSTACK_API_URL ??
+    null
+  const apiKey =
+    process.env.SHOTSTACK_API_KEY ??
+    process.env.SHOTSTOCK_API_KEY ??
+    process.env.SHOTSTACK_KEY ??
+    null
 
-      resolve(data)
-    })
+  if (!baseUrl || !apiKey) {
+    throw new Error('Shotstack API credentials are not configured. Set SHOTSTACK_API_BASE_URL and SHOTSTACK_API_KEY.')
+  }
+
+  return { baseUrl: baseUrl.replace(/\/$/, ''), apiKey }
+}
+
+async function requestShotstackConversion(payload: Record<string, unknown>) {
+  const { baseUrl, apiKey } = resolveShotstackConfig()
+
+  const response = await fetch(`${baseUrl}/convert/mp4-to-gif`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(payload),
   })
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`Shotstack API error ${response.status}: ${body}`)
+  }
+
+  return (await response.json()) as {
+    gifBase64?: string
+    durationSeconds?: number
+    metadata?: Record<string, unknown>
+  }
 }
 
 export async function convertMp4ToGif(
@@ -82,32 +81,27 @@ export async function convertMp4ToGif(
 ): Promise<ConvertMp4ToGifResult> {
   const { width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT, fps = DEFAULT_FPS, loop = DEFAULT_LOOP } = options
 
-  const metadata = await probeVideo(inputPath)
+  const inputBuffer = await readFile(inputPath)
+
+  const response = await requestShotstackConversion({
+    input: inputBuffer.toString('base64'),
+    inputFileName: path.basename(inputPath),
+    outputFileName: path.basename(outputPath),
+    options: { width, height, fps, loop },
+  })
+
+  if (!response.gifBase64) {
+    throw new Error('Shotstack API response did not include a GIF payload.')
+  }
+
+  const gifBuffer = Buffer.from(response.gifBase64, 'base64')
 
   await ensureDirectoryForFile(outputPath)
-
-  await new Promise<void>((resolve, reject) => {
-    ffmpeg(inputPath)
-      .noAudio()
-      .outputOptions([
-        "-vf",
-        `fps=${fps},scale=${width}:${height}:flags=lanczos`,
-        "-loop",
-        String(loop),
-      ])
-      .toFormat("gif")
-      .on("error", (error: Error) => {
-        reject(error)
-      })
-      .on("end", () => {
-        resolve()
-      })
-      .save(outputPath)
-  })
+  await writeFile(outputPath, gifBuffer)
 
   return {
     outputPath: path.resolve(outputPath),
-    durationSeconds: metadata.format?.duration ?? 0,
-    metadata,
+    durationSeconds: response.durationSeconds ?? 0,
+    metadata: response.metadata ?? null,
   }
 }
