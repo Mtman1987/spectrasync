@@ -141,6 +141,42 @@ export async function getTwitchStreams(userIds: string[]): Promise<any[]> {
   }
 }
 
+export async function getTwitchStreamsByLogins(userLogins: string[]): Promise<any[]> {
+  if (userLogins.length === 0) return [];
+
+  if (!process.env.TWITCH_CLIENT_ID) {
+    console.error('Twitch Client ID is not set.');
+    return [];
+  }
+  try {
+    const accessToken = await getTwitchAppAccessToken();
+    const params = new URLSearchParams();
+    Array.from(new Set(userLogins.map((login) => login.toLowerCase())))
+      .forEach((login) => params.append('user_login', login));
+
+    const url = `https://api.twitch.tv/helix/streams?${params.toString()}`;
+
+    const response = await fetch(url, {
+      headers: {
+        'Client-ID': process.env.TWITCH_CLIENT_ID,
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      console.error(`Twitch API error (getStreamsByLogins): ${response.status} ${await response.text()}`);
+      return [];
+    }
+
+    const data = await response.json();
+    return data.data || [];
+  } catch (error) {
+    console.error('Error fetching Twitch streams by login:', error);
+    return [];
+  }
+}
+
+
 export async function getTwitchClips(broadcasterId: string, limit = 5): Promise<any[]> {
   if (!process.env.TWITCH_CLIENT_ID) {
     console.error('Twitch Client ID is not set.');

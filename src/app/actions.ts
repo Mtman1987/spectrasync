@@ -8,7 +8,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
 import type { LiveUser } from './raid-pile/types';
 import { getSettings } from './settings/actions';
-import { getTwitchUserByUsername, getTwitchStreams, getTwitchClips } from '@/lib/twitch';
+import { getTwitchUserByUsername, getTwitchStreams, getTwitchClips, getTwitchStreamsByLogins } from '@/lib/twitch';
 
 
 
@@ -291,21 +291,55 @@ export async function saveAdminTwitchInfo(adminDiscordId: string, twitchUsername
 
 
 // This is a placeholder for a more advanced function that would get live status from Twitch
-export async function getLiveUsersFromTwitch(userIds: string[]): Promise<{ [key: string]: Pick<LiveUser, 'latestGameName' | 'latestViewerCount' | 'latestStreamTitle' | 'started_at'> }> {
-    if (userIds.length === 0) return {};
-    
-    const streams = await getTwitchStreams(userIds);
+export async function getLiveUsersFromTwitch(
+    userIds: string[],
+    userLogins: (string | undefined)[] = []
+): Promise<{ [key: string]: Pick<LiveUser, 'latestGameName' | 'latestViewerCount' | 'latestStreamTitle' | 'started_at'> }> {
+    const normalizedIds = Array.from(new Set(userIds.filter((id): id is string => Boolean(id))));
+    const normalizedLogins = Array.from(
+        new Set(
+            (userLogins || [])
+                .map((login) => login?.trim().toLowerCase())
+                .filter((login): login is string => Boolean(login))
+        )
+    );
+
+    if (normalizedIds.length === 0 && normalizedLogins.length === 0) {
+        return {};
+    }
 
     const liveData: { [key: string]: Pick<LiveUser, 'latestGameName' | 'latestViewerCount' | 'latestStreamTitle' | 'started_at'> } = {};
+    const seenIds = new Set<string>();
 
-    streams.forEach(stream => {
+    const recordStream = (stream: any) => {
+        if (!stream?.user_id) {
+            return;
+        }
         liveData[stream.user_id] = {
             latestGameName: stream.game_name,
             latestViewerCount: stream.viewer_count,
             latestStreamTitle: stream.title,
             started_at: stream.started_at,
         };
+        seenIds.add(stream.user_id);
+    };
+
+    if (normalizedIds.length > 0) {
+        const streams = await getTwitchStreams(normalizedIds);
+        streams.forEach(recordStream);
+    }
+
+    const fallbackLogins = normalizedLogins.filter((login) => {
+        return !Array.from(seenIds).some((id) => {
+            const data = liveData[id];
+            return data && login === undefined;
+        });
     });
+
+    if (fallbackLogins.length > 0) {
+        const fallbackStreams = await getTwitchStreamsByLogins(fallbackLogins);
+        fallbackStreams.forEach(recordStream);
+    }
 
     return liveData;
 }
