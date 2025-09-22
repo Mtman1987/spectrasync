@@ -214,7 +214,7 @@ export async function getSelectedGuildId(adminDiscordId: string): Promise<string
 // --- TWITCH-RELATED ACTIONS ---
 // Note: The core Twitch API functions have been moved to src/bot/twitch-actions.ts
 // to ensure they can be used by both the bot and the web app without bundling issues.
-export { getTwitchUserByUsername, getTwitchStreams, getTwitchClips };
+export { getTwitchUserByUsername, getTwitchStreams, getTwitchClips, getTwitchStreamsByLogins };
 
 
 /**
@@ -291,55 +291,21 @@ export async function saveAdminTwitchInfo(adminDiscordId: string, twitchUsername
 
 
 // This is a placeholder for a more advanced function that would get live status from Twitch
-export async function getLiveUsersFromTwitch(
-    userIds: string[],
-    userLogins: (string | undefined)[] = []
-): Promise<{ [key: string]: Pick<LiveUser, 'latestGameName' | 'latestViewerCount' | 'latestStreamTitle' | 'started_at'> }> {
-    const normalizedIds = Array.from(new Set(userIds.filter((id): id is string => Boolean(id))));
-    const normalizedLogins = Array.from(
-        new Set(
-            (userLogins || [])
-                .map((login) => login?.trim().toLowerCase())
-                .filter((login): login is string => Boolean(login))
-        )
-    );
-
-    if (normalizedIds.length === 0 && normalizedLogins.length === 0) {
-        return {};
-    }
+export async function getLiveUsersFromTwitch(userIds: string[]): Promise<{ [key: string]: Pick<LiveUser, 'latestGameName' | 'latestViewerCount' | 'latestStreamTitle' | 'started_at'> }> {
+    if (userIds.length === 0) return {};
+    
+    const streams = await getTwitchStreams(userIds);
 
     const liveData: { [key: string]: Pick<LiveUser, 'latestGameName' | 'latestViewerCount' | 'latestStreamTitle' | 'started_at'> } = {};
-    const seenIds = new Set<string>();
 
-    const recordStream = (stream: any) => {
-        if (!stream?.user_id) {
-            return;
-        }
+    streams.forEach(stream => {
         liveData[stream.user_id] = {
             latestGameName: stream.game_name,
             latestViewerCount: stream.viewer_count,
             latestStreamTitle: stream.title,
             started_at: stream.started_at,
         };
-        seenIds.add(stream.user_id);
-    };
-
-    if (normalizedIds.length > 0) {
-        const streams = await getTwitchStreams(normalizedIds);
-        streams.forEach(recordStream);
-    }
-
-    const fallbackLogins = normalizedLogins.filter((login) => {
-        return !Array.from(seenIds).some((id) => {
-            const data = liveData[id];
-            return data && login === undefined;
-        });
     });
-
-    if (fallbackLogins.length > 0) {
-        const fallbackStreams = await getTwitchStreamsByLogins(fallbackLogins);
-        fallbackStreams.forEach(recordStream);
-    }
 
     return liveData;
 }
@@ -529,37 +495,77 @@ export async function getLiveCommunityPoolUsers(guildId: string): Promise<LiveUs
 
 export async function getLiveVipUsers(guildId: string): Promise<LiveUser[]> {
     if (!guildId) {
-       console.error("No guildId provided to getLiveVipUsers");
-       return [];
-   }
-   try {
+        console.error("No guildId provided to getLiveVipUsers");
+        return [];
+    }
+    try {
         const db = getAdminDb();
-        const usersSnapshot = await db.collection(`communities/${guildId}/users`).where("isVip", "==", true).get();
+        const usersSnapshot = await db
+            .collection(`communities/${guildId}/users`)
+            .where("isVip", "==", true)
+            .get();
 
         if (usersSnapshot.empty) {
-           return [];
+            return [];
         }
 
-        const userIds = usersSnapshot.docs.map(doc => doc.data().twitchInfo?.id).filter(Boolean);
+        const userIds = usersSnapshot.docs
+            .map((doc) => doc.data().twitchInfo?.id)
+            .filter((id): id is string => Boolean(id));
 
-        if (userIds.length === 0) return [];
-        
-        const [dbUsers, liveTwitchData] = await Promise.all([
-             getUsersFromDb(guildId, userIds),
-             getLiveUsersFromTwitch(userIds)
-        ]);
+        const fallbackUsers = usersSnapshot.docs.map((doc) => {
+            const data = doc.data();
+            const twitchInfo = data.twitchInfo || {};
+            const discordInfo = data.discordInfo || {};
+            return {
+                twitchId: twitchInfo.id || '',
+                twitchLogin: twitchInfo.login || discordInfo.username || '',
+                displayName: twitchInfo.displayName || discordInfo.username || doc.id,
+                avatarUrl: twitchInfo.avatar || discordInfo.avatar,
+                latestGameName: '',
+                latestViewerCount: 0,
+                vipMessage: data.vipMessage || undefined,
+                points: data.points || 0,
+            } as LiveUser;
+        });
 
-        const liveUsers = dbUsers.map(user => {
-            const twitchData = liveTwitchData[user.twitchId];
-            return twitchData ? { ...user, ...twitchData } : null;
-        }).filter((u): u is LiveUser => u !== null);
-       
-       return liveUsers;
+        const vipUsers = userIds.length > 0 ? await getUsersFromDb(guildId, userIds) : fallbackUsers;
+        const liveDataById = userIds.length > 0 ? await getLiveUsersFromTwitch(userIds) : {};
 
-   } catch (error) {
-       console.error(`Error getting live VIP users for guild ${guildId}:`, error);
-       return [];
-   }
+        const loginData = new Map<string, Pick<LiveUser, 'latestGameName' | 'latestViewerCount' | 'latestStreamTitle' | 'started_at'>>();
+        const fallbackLogins = vipUsers
+            .filter((user) => !liveDataById[user.twitchId] && user.twitchLogin)
+            .map((user) => user.twitchLogin!.toLowerCase());
+
+        if (fallbackLogins.length > 0) {
+            const fallbackStreams = await getTwitchStreamsByLogins(fallbackLogins);
+            fallbackStreams.forEach((stream) => {
+                const loginKey = stream.user_login?.toLowerCase();
+                if (!loginKey) {
+                    return;
+                }
+                loginData.set(loginKey, {
+                    latestGameName: stream.game_name,
+                    latestViewerCount: stream.viewer_count,
+                    latestStreamTitle: stream.title,
+                    started_at: stream.started_at,
+                });
+            });
+        }
+
+        const liveUsers = vipUsers
+            .map((user) => {
+                const loginKey = user.twitchLogin ? user.twitchLogin.toLowerCase() : undefined;
+                const twitchData = (user.twitchId && liveDataById[user.twitchId]) || (loginKey ? loginData.get(loginKey) : undefined);
+                return twitchData ? { ...user, ...twitchData } : null;
+            })
+            .filter((user): user is LiveUser => user !== null);
+
+        return liveUsers;
+    } catch (error) {
+        console.error(`Error getting live VIP users for guild ${guildId}:`, error);
+        return [];
+    }
 }
 
 
@@ -809,4 +815,12 @@ export async function addPointsToAdmin(guildId: string, adminDiscordId: string, 
     return { success: false, error: errorMessage };
   }
 }
+
+
+
+
+
+
+
+
 
