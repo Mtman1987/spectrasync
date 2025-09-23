@@ -34,6 +34,21 @@ This section covers everything you need to know to get your community set up and
 - **Select Your Community**: After authorizing, select the server you want to manage from the dropdown. This choice is saved to your profile.
 - **Link Your Twitch Account**: In the **Settings** page, you'll be prompted to link your Twitch account. This is crucial for identifying you as an admin in bot interactions.
 
+#### Environment Variables
+
+Add the following variables to your `.env.local` (or hosting provider secrets) to enable GIF previews and test data for VIP embeds:
+
+- `SHOTSTACK_API_KEY` – required to convert clips to GIFs via Shotstack.
+- `SHOTSTACK_API_BASE_URL` *(optional)* – override the Shotstack API host; defaults to `https://api.shotstack.io/stage`.
+- `VIP_TEST_CLIP_URL` *(optional)* – fallback clip URL used when a VIP does not have a custom highlight set.
+- `VIP_TEST_GIF_URL` *(optional)* – fallback GIF URL used if conversion fails.
+- `VIP_TEST_AVATAR_URL` *(optional)* – avatar to use for the always-online sample VIP.
+- `VIP_TEST_MESSAGE` *(optional)* – default VIP message shown in embeds when none is configured.
+- `VIP_TEST_VIEWER_COUNT` *(optional)* – viewer count used for the sample VIP analytics display.
+- `VIP_ENABLE_TEST_LIVE` *(optional)* – set to `false` to disable the always-online sample VIP entry.
+- `VIP_FOOTER_ICON_URL` *(optional)* – custom footer icon for the VIP embed template.
+- `VIP_REFRESH_INTERVAL_SECONDS` *(optional)* – override the 6-minute refresh cadence for the background dispatcher.
+
 ### 2. Setting Up Your Discord Server
 
 The true power of Cosmic Raid comes from its Discord bot integration. Use these slash commands in your server to create interactive channels.

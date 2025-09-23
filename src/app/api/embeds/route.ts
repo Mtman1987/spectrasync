@@ -59,7 +59,7 @@ type DispatchSummary =
   | { status: "sent"; count: number; messageIds: string[] }
   | { status: "error"; error: string };
 
-const VIP_REFRESH_SECONDS = 7 * 60;
+const VIP_REFRESH_SECONDS = 6 * 60;
 const DISCORD_MAX_EMBEDS = 10;
 const MAX_VIP_CARDS = 100;
 const DISCORD_API_BASE = process.env.DISCORD_API_BASE_URL ?? "https://discord.com/api/v10";
@@ -241,11 +241,13 @@ function pickVipOrdering(liveVips: LiveUser[], payload: EmbedRequestPayload) {
 }
 
 function getClipPreviewPlaceholder(vip: LiveUser): ClipPreview {
-  void vip;
   return {
-    sourceClipUrl: null,
-    gifUrl: null,
-    note: "TODO: Fetch Twitch clip, convert via Shotstack, store in Firebase Storage, and embed autoplay GIF URL.",
+    sourceClipUrl: vip.clipUrl ?? null,
+    gifUrl: vip.gifUrl ?? null,
+    note:
+      vip.gifUrl && vip.gifUrl.trim().length > 0
+        ? null
+        : "Provide a highlight clip to showcase an animated preview in the embed.",
   };
 }
 
@@ -307,24 +309,52 @@ async function buildVipLiveEmbed(payload: EmbedRequestPayload): Promise<EmbedRes
       const viewerCount = typeof vip.latestViewerCount === "number" ? vip.latestViewerCount : 0;
       const startedAtText = formatStartedAt(vip.started_at);
       const clipPreview = getClipPreviewPlaceholder(vip);
+      const viewerLabel = viewerCount > 0 ? viewerCount.toLocaleString() : "0";
+      const signalStrength = viewerCount > 0 ? `High (${viewerLabel} aboard)` : "Calibrating";
 
-      const fields: Array<{ name: string; value: string; inline?: boolean }> = [
-        { name: "Streaming", value: vip.latestGameName || "N/A", inline: true },
-        { name: "Viewers", value: `${viewerCount}`, inline: true },
-      ];
-
+      const descriptionLines: string[] = [];
       if (vip.vipMessage && vip.vipMessage.trim().length > 0) {
-        fields.push({ name: "VIP Message", value: vip.vipMessage.trim(), inline: false });
+        descriptionLines.push(`> ${vip.vipMessage.trim()}`);
+      } else if (vip.latestStreamTitle && vip.latestStreamTitle.trim().length > 0) {
+        descriptionLines.push(`> ${vip.latestStreamTitle.trim()}`);
+      } else {
+        descriptionLines.push(`> ${vip.displayName} is live now!`);
       }
 
+      if (vip.latestGameName && vip.latestGameName.trim().length > 0) {
+        descriptionLines.push(`> 🎮 Now playing: **${vip.latestGameName.trim()}**`);
+      }
+
+      if (startedAtText && startedAtText !== "Unknown") {
+        descriptionLines.push(`> ⏱️ Live since ${startedAtText}`);
+      }
+
+      const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+        { name: "💬 Chat Commands", value: "`!boost`, `!shoutout`, `!warp`", inline: true },
+        { name: "🎁 Loot Drops", value: "Cosmic crates every 30 mins", inline: true },
+        { name: "📡 Signal Strength", value: signalStrength, inline: true },
+      ];
+
       cardEmbeds.push({
-        title: `${index + 1}. ${vip.displayName}`,
+        author:
+          vip.avatarUrl || vip.displayName
+            ? {
+                name: `🌌 ${vip.displayName} Goes Galactic!`,
+                icon_url: vip.avatarUrl ?? undefined,
+                url: vip.twitchLogin ? `https://twitch.tv/${vip.twitchLogin}` : undefined,
+              }
+            : undefined,
+        title: `🪐 ${vip.latestStreamTitle && vip.latestStreamTitle.trim().length > 0 ? vip.latestStreamTitle.trim() : vip.displayName}`,
         url: vip.twitchLogin ? `https://twitch.tv/${vip.twitchLogin}` : undefined,
-        description: vip.latestStreamTitle || "Streaming now!",
-        color: index === 0 ? 0x9146ff : 0x4864ff,
+        description: descriptionLines.join("\n"),
+        color: 0xff9640,
         fields,
         thumbnail: vip.avatarUrl ? { url: vip.avatarUrl } : undefined,
-        footer: { text: `Live since ${startedAtText}` },
+        image: clipPreview.gifUrl ? { url: clipPreview.gifUrl } : undefined,
+        footer: {
+          text: "Powered by Cosmic Crew • All systems nominal",
+          icon_url: "https://cdn.discordapp.com/embed/avatars/0.png",
+        },
         timestamp: isoNow,
       });
 
@@ -351,7 +381,7 @@ async function buildVipLiveEmbed(payload: EmbedRequestPayload): Promise<EmbedRes
     }
   }
 
-  const footerLines: string[] = [`Last update: ${formattedTimestamp}`, "Updates ~7m"];
+  const footerLines: string[] = [`Last update: ${formattedTimestamp}`, "Updates ~6m"];
   if (typeof rawPayload.channelId === "string" && rawPayload.channelId.trim().length > 0) {
     footerLines.push(`Channel: <#${rawPayload.channelId.trim()}>`);
   }
