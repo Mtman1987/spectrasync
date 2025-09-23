@@ -15,7 +15,7 @@ interface VipLiveConfigDoc {
 }
 
 const endpoint = process.env.VIP_EMBED_ENDPOINT ?? "http://localhost:9002/api/embeds";
-const defaultIntervalSeconds = Number.parseInt(process.env.VIP_REFRESH_INTERVAL_SECONDS ?? "420", 10) || 420;
+const defaultIntervalSeconds = Number.parseInt(process.env.VIP_REFRESH_INTERVAL_SECONDS ?? "360", 10) || 360;
 const botSecret = process.env.BOT_SECRET_KEY ?? "";
 const guildIdFromEnv = process.env.GUILD_ID ?? process.env.HARDCODED_GUILD_ID ?? "";
 const vipConfigDocId = "vipLiveConfig";

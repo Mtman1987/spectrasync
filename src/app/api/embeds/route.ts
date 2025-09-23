@@ -59,11 +59,21 @@ type DispatchSummary =
   | { status: "sent"; count: number; messageIds: string[] }
   | { status: "error"; error: string };
 
-const VIP_REFRESH_SECONDS = 7 * 60;
+const VIP_REFRESH_SECONDS = 6 * 60;
 const DISCORD_MAX_EMBEDS = 10;
 const MAX_VIP_CARDS = 100;
 const DISCORD_API_BASE = process.env.DISCORD_API_BASE_URL ?? "https://discord.com/api/v10";
 const VIP_LIVE_CONFIG_DOC_ID = "vipLiveConfig";
+
+interface VipLiveConfigDoc extends Record<string, unknown> {
+  guildId?: string;
+  channelId?: string | null;
+  headerTitle?: string | null;
+  headerMessage?: string | null;
+  maxEmbedsPerMessage?: number | null;
+  refreshHintSeconds?: number | null;
+  lastDispatchMessageIds?: string[] | null;
+}
 
 const embedBuilders: Record<string, EmbedBuilder> = {
   calendar: async ({ guildId }) => buildCalendarEmbed(guildId),
@@ -241,11 +251,13 @@ function pickVipOrdering(liveVips: LiveUser[], payload: EmbedRequestPayload) {
 }
 
 function getClipPreviewPlaceholder(vip: LiveUser): ClipPreview {
-  void vip;
   return {
-    sourceClipUrl: null,
-    gifUrl: null,
-    note: "TODO: Fetch Twitch clip, convert via Shotstack, store in Firebase Storage, and embed autoplay GIF URL.",
+    sourceClipUrl: vip.clipUrl ?? null,
+    gifUrl: vip.gifUrl ?? null,
+    note:
+      vip.gifUrl && vip.gifUrl.trim().length > 0
+        ? null
+        : "Provide a highlight clip to showcase an animated preview in the embed.",
   };
 }
 
@@ -307,24 +319,52 @@ async function buildVipLiveEmbed(payload: EmbedRequestPayload): Promise<EmbedRes
       const viewerCount = typeof vip.latestViewerCount === "number" ? vip.latestViewerCount : 0;
       const startedAtText = formatStartedAt(vip.started_at);
       const clipPreview = getClipPreviewPlaceholder(vip);
+      const viewerLabel = viewerCount > 0 ? viewerCount.toLocaleString() : "0";
+      const signalStrength = viewerCount > 0 ? `High (${viewerLabel} aboard)` : "Calibrating";
 
-      const fields: Array<{ name: string; value: string; inline?: boolean }> = [
-        { name: "Streaming", value: vip.latestGameName || "N/A", inline: true },
-        { name: "Viewers", value: `${viewerCount}`, inline: true },
-      ];
-
+      const descriptionLines: string[] = [];
       if (vip.vipMessage && vip.vipMessage.trim().length > 0) {
-        fields.push({ name: "VIP Message", value: vip.vipMessage.trim(), inline: false });
+        descriptionLines.push(`> ${vip.vipMessage.trim()}`);
+      } else if (vip.latestStreamTitle && vip.latestStreamTitle.trim().length > 0) {
+        descriptionLines.push(`> ${vip.latestStreamTitle.trim()}`);
+      } else {
+        descriptionLines.push(`> ${vip.displayName} is live now!`);
       }
 
+      if (vip.latestGameName && vip.latestGameName.trim().length > 0) {
+        descriptionLines.push(`> 🎮 Now playing: **${vip.latestGameName.trim()}**`);
+      }
+
+      if (startedAtText && startedAtText !== "Unknown") {
+        descriptionLines.push(`> ⏱️ Live since ${startedAtText}`);
+      }
+
+      const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+        { name: "💬 Chat Commands", value: "`!boost`, `!shoutout`, `!warp`", inline: true },
+        { name: "🎁 Loot Drops", value: "Cosmic crates every 30 mins", inline: true },
+        { name: "📡 Signal Strength", value: signalStrength, inline: true },
+      ];
+
       cardEmbeds.push({
-        title: `${index + 1}. ${vip.displayName}`,
+        author:
+          vip.avatarUrl || vip.displayName
+            ? {
+                name: `🌌 ${vip.displayName} Goes Galactic!`,
+                icon_url: vip.avatarUrl ?? undefined,
+                url: vip.twitchLogin ? `https://twitch.tv/${vip.twitchLogin}` : undefined,
+              }
+            : undefined,
+        title: `🪐 ${vip.latestStreamTitle && vip.latestStreamTitle.trim().length > 0 ? vip.latestStreamTitle.trim() : vip.displayName}`,
         url: vip.twitchLogin ? `https://twitch.tv/${vip.twitchLogin}` : undefined,
-        description: vip.latestStreamTitle || "Streaming now!",
-        color: index === 0 ? 0x9146ff : 0x4864ff,
+        description: descriptionLines.join("\n"),
+        color: 0xff9640,
         fields,
         thumbnail: vip.avatarUrl ? { url: vip.avatarUrl } : undefined,
-        footer: { text: `Live since ${startedAtText}` },
+        image: clipPreview.gifUrl ? { url: clipPreview.gifUrl } : undefined,
+        footer: {
+          text: "Powered by Cosmic Crew • All systems nominal",
+          icon_url: "https://cdn.discordapp.com/embed/avatars/0.png",
+        },
         timestamp: isoNow,
       });
 
@@ -351,7 +391,7 @@ async function buildVipLiveEmbed(payload: EmbedRequestPayload): Promise<EmbedRes
     }
   }
 
-  const footerLines: string[] = [`Last update: ${formattedTimestamp}`, "Updates ~7m"];
+  const footerLines: string[] = [`Last update: ${formattedTimestamp}`, "Updates ~6m"];
   if (typeof rawPayload.channelId === "string" && rawPayload.channelId.trim().length > 0) {
     footerLines.push(`Channel: <#${rawPayload.channelId.trim()}>`);
   }
@@ -391,23 +431,31 @@ async function buildVipLiveEmbed(payload: EmbedRequestPayload): Promise<EmbedRes
   };
 }
 
-async function dispatchMessagesToDiscord(messages: MessageBlock[], channelId: string) {
+async function dispatchMessagesToDiscord(
+  messages: MessageBlock[],
+  channelId: string,
+  options: { previousChannelId?: string | null; previousMessageIds?: string[] } = {},
+) {
   const botToken = process.env.DISCORD_BOT_TOKEN;
   if (!botToken) {
     throw new Error("DISCORD_BOT_TOKEN is not configured.");
   }
 
   const userAgent = process.env.DISCORD_USER_AGENT ?? "SpectraSyncBot/1.0 (+https://spectrasync.app)";
+  const authHeaders = {
+    Authorization: `Bot ${botToken}`,
+    "User-Agent": userAgent,
+  } satisfies Record<string, string>;
+  const postHeaders = {
+    ...authHeaders,
+    "Content-Type": "application/json",
+  } satisfies Record<string, string>;
   const ids: string[] = [];
 
   for (const block of messages) {
     const response = await fetch(`${DISCORD_API_BASE}/channels/${channelId}/messages`, {
       method: "POST",
-      headers: {
-        Authorization: `Bot ${botToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": userAgent,
-      },
+      headers: postHeaders,
       body: JSON.stringify({ embeds: block.embeds }),
     });
 
@@ -428,11 +476,72 @@ async function dispatchMessagesToDiscord(messages: MessageBlock[], channelId: st
     }
   }
 
+  const sanitizedPreviousIds = Array.isArray(options.previousMessageIds)
+    ? Array.from(
+        new Set(
+          options.previousMessageIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0),
+        ),
+      )
+    : [];
+
+  if (sanitizedPreviousIds.length > 0) {
+    const previousChannelId =
+      options.previousChannelId && options.previousChannelId.trim().length > 0
+        ? options.previousChannelId.trim()
+        : channelId;
+
+    await deleteDiscordMessages(previousChannelId, sanitizedPreviousIds, authHeaders);
+  }
+
   return ids;
 }
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function deleteDiscordMessages(
+  channelId: string,
+  messageIds: string[],
+  headers: Record<string, string>,
+) {
+  for (const messageId of messageIds) {
+    try {
+      const response = await fetch(`${DISCORD_API_BASE}/channels/${channelId}/messages/${messageId}`, {
+        method: "DELETE",
+        headers,
+      });
+
+      if (!response.ok && response.status !== 404) {
+        const text = await response.text();
+        console.warn(
+          `[vip-live] Failed to delete Discord message ${messageId} from ${channelId}: ${response.status} ${text}`,
+        );
+      }
+    } catch (error) {
+      console.warn(`[vip-live] Error deleting Discord message ${messageId} from ${channelId}:`, error);
+    }
+
+    if (messageIds.length > 1) {
+      await delay(250);
+    }
+  }
+}
+
+async function getVipLiveConfigDoc(guildId: string): Promise<VipLiveConfigDoc | null> {
+  const db = getAdminDb();
+  const doc = await db
+    .collection("communities")
+    .doc(guildId)
+    .collection("settings")
+    .doc(VIP_LIVE_CONFIG_DOC_ID)
+    .get();
+
+  if (!doc.exists) {
+    return null;
+  }
+
+  return doc.data() as VipLiveConfigDoc;
 }
 
 async function persistVipLiveConfig(
@@ -522,6 +631,15 @@ export async function POST(request: NextRequest) {
 
     let statusCode = 200;
     let dispatchSummary: DispatchSummary = { status: "skipped" };
+    let existingConfig: VipLiveConfigDoc | null = null;
+
+    if (payload.dispatch) {
+      try {
+        existingConfig = await getVipLiveConfigDoc(payload.guildId);
+      } catch (error) {
+        console.error("Failed to load existing VIP live configuration", error);
+      }
+    }
 
     if (payload.dispatch) {
       if (!payload.channelId || typeof payload.channelId !== "string" || !payload.channelId.trim()) {
@@ -531,14 +649,27 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const channelId = payload.channelId.trim();
       const maybeMessages = (responsePayload as Record<string, unknown>).messages;
       if (!Array.isArray(maybeMessages) || maybeMessages.length === 0) {
         dispatchSummary = { status: "skipped", reason: "No messages to dispatch" };
       } else {
         try {
+          const previousChannelId =
+            existingConfig && typeof existingConfig.channelId === "string"
+              ? existingConfig.channelId.trim().length > 0
+                ? existingConfig.channelId.trim()
+                : null
+              : null;
+          const previousMessageIds = existingConfig?.lastDispatchMessageIds ?? [];
+
           const messageIds = await dispatchMessagesToDiscord(
             maybeMessages as MessageBlock[],
-            payload.channelId,
+            channelId,
+            {
+              previousChannelId,
+              previousMessageIds,
+            },
           );
           dispatchSummary = {
             status: "sent",

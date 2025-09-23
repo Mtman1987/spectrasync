@@ -493,6 +493,54 @@ export async function getLiveCommunityPoolUsers(guildId: string): Promise<LiveUs
     }
 }
 
+const DEFAULT_TEST_VIP_CLIP_URL =
+    process.env.VIP_TEST_CLIP_URL ??
+    'https://www.twitch.tv/swordsmaneb/clip/CulturedAffluentJellyfishPRChase-7mAyvT1tE2yRCOSt';
+
+const DEFAULT_TEST_VIP_GIF_URL =
+    process.env.VIP_TEST_GIF_URL ??
+    'https://i.ibb.co/cSB5dBbv/314902552281-offset-1580-ezgif-com-video-to-gif-converter.gif';
+
+const DEFAULT_TEST_VIP_AVATAR =
+    process.env.VIP_TEST_AVATAR_URL ??
+    'https://i.ibb.co/Z6pZJPTX/astronaut-illustration-clothing-logo-866196-17.jpg';
+
+function shouldInjectTestVip(): boolean {
+    const flag = process.env.VIP_ENABLE_TEST_LIVE;
+    if (typeof flag !== 'string') {
+        return true;
+    }
+
+    const normalized = flag.trim().toLowerCase();
+    if (!normalized) {
+        return true;
+    }
+
+    return !['false', '0', 'off', 'disable', 'disabled', 'no'].includes(normalized);
+}
+
+function createTestVipUser(): LiveUser {
+    const startedAt = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const viewerCount = Number.parseInt(process.env.VIP_TEST_VIEWER_COUNT ?? '', 10);
+
+    return {
+        twitchId: 'vip-test-swordsmaneb',
+        twitchLogin: 'swordsmaneb',
+        displayName: 'SwordsmanEB',
+        avatarUrl: DEFAULT_TEST_VIP_AVATAR,
+        latestGameName: 'Echoes of the Atlas',
+        latestViewerCount: Number.isFinite(viewerCount) ? viewerCount : 128,
+        latestStreamTitle: 'Expedition: Echoes of the Atlas',
+        vipMessage:
+            process.env.VIP_TEST_MESSAGE ??
+            '🌠 Space Mountain Broadcast: The stars align for a mission of generosity. Join the orbit, lift spirits, and vibe with the crew.',
+        started_at: startedAt,
+        clipUrl: DEFAULT_TEST_VIP_CLIP_URL,
+        gifUrl: DEFAULT_TEST_VIP_GIF_URL,
+        points: 0,
+    };
+}
+
 export async function getLiveVipUsers(guildId: string): Promise<LiveUser[]> {
     if (!guildId) {
         console.error("No guildId provided to getLiveVipUsers");
@@ -561,9 +609,16 @@ export async function getLiveVipUsers(guildId: string): Promise<LiveUser[]> {
             })
             .filter((user): user is LiveUser => user !== null);
 
+        if (!liveUsers.length && shouldInjectTestVip()) {
+            liveUsers.push(createTestVipUser());
+        }
+
         return liveUsers;
     } catch (error) {
         console.error(`Error getting live VIP users for guild ${guildId}:`, error);
+        if (shouldInjectTestVip()) {
+            return [createTestVipUser()];
+        }
         return [];
     }
 }
