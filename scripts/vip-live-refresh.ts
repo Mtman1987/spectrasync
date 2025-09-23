@@ -1,100 +1,158 @@
-﻿import "dotenv/config";
+import "dotenv/config";
+import { setTimeout as sleep } from "node:timers/promises";
 
-const DEFAULT_ENDPOINT = process.env.VIP_EMBED_ENDPOINT ?? "http://localhost:9002/api/embeds";
-const DEFAULT_INTERVAL_SECONDS = Number(process.env.VIP_REFRESH_INTERVAL_SECONDS ?? "420");
-const GUILD_ID = process.env.GUILD_ID ?? process.env.HARDCODED_GUILD_ID ?? "";
-const CHANNEL_ID = process.env.DISCORD_VIP_CHANNEL_ID ?? process.env.DISCORD_CHANNEL_ID ?? "";
-const BOT_SECRET = process.env.BOT_SECRET_KEY ?? process.env.BOT_SECRET ?? "";
+import { getAdminDb } from "@/lib/firebase-admin";
 
-if (!GUILD_ID) {
-  console.error("[vip-live-refresh] Missing GUILD_ID (or HARDCODED_GUILD_ID) in environment.");
-  process.exit(1);
+interface VipLiveConfigDoc {
+  channelId: string | null;
+  guildId: string;
+  headerTitle?: string | null;
+  headerMessage?: string | null;
+  maxEmbedsPerMessage?: number | null;
+  refreshHintSeconds?: number | null;
+  dispatchEnabled?: boolean;
+  lastUpdatedAt?: string | null;
 }
 
-if (!CHANNEL_ID) {
-  console.error("[vip-live-refresh] Missing DISCORD_VIP_CHANNEL_ID (or DISCORD_CHANNEL_ID) in environment.");
-  process.exit(1);
-}
+const endpoint = process.env.VIP_EMBED_ENDPOINT ?? "http://localhost:9002/api/embeds";
+const defaultIntervalSeconds = Number.parseInt(process.env.VIP_REFRESH_INTERVAL_SECONDS ?? "420", 10) || 420;
+const botSecret = process.env.BOT_SECRET_KEY ?? "";
+const guildIdFromEnv = process.env.GUILD_ID ?? process.env.HARDCODED_GUILD_ID ?? "";
+const vipConfigDocId = "vipLiveConfig";
 
-const endpoint = DEFAULT_ENDPOINT;
-const intervalSeconds = Number.isFinite(DEFAULT_INTERVAL_SECONDS) && DEFAULT_INTERVAL_SECONDS > 0
-  ? DEFAULT_INTERVAL_SECONDS
-  : 420;
-
-let timer: NodeJS.Timeout | null = null;
-let running = false;
-
-async function runCycle() {
-  if (running) {
-    console.warn("[vip-live-refresh] Previous cycle still running. Skipping this tick.");
-    return;
-  }
-
-  running = true;
-  const startedAt = new Date();
-  console.info(`[vip-live-refresh] Dispatching VIP embed at ${startedAt.toISOString()}`);
-
-  try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(BOT_SECRET ? { "x-bot-secret": BOT_SECRET } : {}),
-      },
-      body: JSON.stringify({
-        type: "vip-live",
-        guildId: GUILD_ID,
-        channelId: CHANNEL_ID,
-        dispatch: true,
-      }),
-    });
-
-    const payload = await response.json().catch(() => null);
-
-    if (!response.ok) {
-      console.error(
-        `[vip-live-refresh] Dispatch failed (${response.status}):`,
-        payload?.error ?? payload ?? "Unknown error",
-      );
-    } else {
-      const meta = payload?.dispatch ?? {};
-      console.info(
-        `[vip-live-refresh] Dispatch summary:`,
-        JSON.stringify(meta, null, 2),
-      );
-    }
-  } catch (error) {
-    console.error("[vip-live-refresh] Unexpected error while dispatching VIP embed:", error);
-  } finally {
-    running = false;
-  }
-}
-
-function startTimer() {
-  timer = setInterval(runCycle, intervalSeconds * 1000);
-  timer.unref?.();
-  runCycle().catch((error) => {
-    console.error("[vip-live-refresh] Initial run failed:", error);
-  });
-}
-
-function stopTimer() {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
-  }
-}
+let stopRequested = false;
 
 process.once("SIGINT", () => {
   console.info("[vip-live-refresh] Caught SIGINT. Shutting down.");
-  stopTimer();
-  process.exit(0);
+  stopRequested = true;
 });
 
 process.once("SIGTERM", () => {
   console.info("[vip-live-refresh] Caught SIGTERM. Shutting down.");
-  stopTimer();
-  process.exit(0);
+  stopRequested = true;
 });
 
-startTimer();
+function resolveGuildId(): string | null {
+  if (guildIdFromEnv.trim().length > 0) {
+    return guildIdFromEnv.trim();
+  }
+
+  console.warn("[vip-live-refresh] GUILD_ID is not set. Waiting for configuration.");
+  return null;
+}
+
+async function fetchVipConfig(guildId: string): Promise<VipLiveConfigDoc | null> {
+  const db = getAdminDb();
+  const doc = await db
+    .collection("communities")
+    .doc(guildId)
+    .collection("settings")
+    .doc(vipConfigDocId)
+    .get();
+
+  if (!doc.exists) {
+    return null;
+  }
+
+  return doc.data() as VipLiveConfigDoc;
+}
+
+function buildDispatchBody(guildId: string, config: VipLiveConfigDoc) {
+  const body: Record<string, unknown> = {
+    type: "vip-live",
+    guildId,
+    channelId: config.channelId,
+    dispatch: true,
+  };
+
+  if (config.headerTitle) {
+    body.headerTitle = config.headerTitle;
+  }
+  if (config.headerMessage) {
+    body.headerMessage = config.headerMessage;
+  }
+  if (typeof config.maxEmbedsPerMessage === "number") {
+    body.maxEmbedsPerMessage = config.maxEmbedsPerMessage;
+  }
+
+  return body;
+}
+
+async function dispatchVipEmbed(guildId: string, config: VipLiveConfigDoc) {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  if (botSecret.trim().length > 0) {
+    headers["x-bot-secret"] = botSecret.trim();
+  }
+
+  const body = buildDispatchBody(guildId, config);
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    console.error(
+      `[vip-live-refresh] Dispatch failed (${response.status}):`,
+      payload?.error ?? payload ?? "Unknown error",
+    );
+    return payload;
+  }
+
+  console.info(
+    "[vip-live-refresh] Dispatch summary:",
+    JSON.stringify(payload?.dispatch ?? {}, null, 2),
+  );
+
+  return payload;
+}
+
+async function loop() {
+  while (!stopRequested) {
+    const guildId = resolveGuildId();
+    if (!guildId) {
+      await sleep(defaultIntervalSeconds * 1000);
+      continue;
+    }
+
+    let config: VipLiveConfigDoc | null = null;
+
+    try {
+      config = await fetchVipConfig(guildId);
+    } catch (error) {
+      console.error("[vip-live-refresh] Failed to read VIP configuration:", error);
+      await sleep(defaultIntervalSeconds * 1000);
+      continue;
+    }
+
+    if (!config || !config.dispatchEnabled || !config.channelId) {
+      console.info("[vip-live-refresh] No active VIP embed configuration. Sleeping...");
+      const sleepSeconds = config?.refreshHintSeconds ?? defaultIntervalSeconds;
+      await sleep(Math.max(30, sleepSeconds) * 1000);
+      continue;
+    }
+
+    try {
+      const payload = await dispatchVipEmbed(guildId, config);
+      const nextIntervalSeconds =
+        (payload?.refreshHintSeconds as number | undefined) ??
+        config.refreshHintSeconds ??
+        defaultIntervalSeconds;
+      await sleep(Math.max(30, nextIntervalSeconds) * 1000);
+    } catch (error) {
+      console.error("[vip-live-refresh] Unexpected error during dispatch:", error);
+      await sleep(defaultIntervalSeconds * 1000);
+    }
+  }
+}
+
+loop().catch((error) => {
+  console.error("[vip-live-refresh] Fatal error:", error);
+  process.exit(1);
+});

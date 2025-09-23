@@ -4,6 +4,7 @@ import { format } from "date-fns";
 import { buildCalendarEmbed } from "@/app/calendar/actions";
 import { buildLeaderboardEmbed } from "@/app/leaderboard/actions";
 import { getLiveVipUsers } from "@/app/actions";
+import { getAdminDb } from "@/lib/firebase-admin";
 import type { LiveUser } from "@/app/raid-pile/types";
 
 interface EmbedRequestPayload extends Record<string, unknown> {
@@ -20,6 +21,18 @@ interface EmbedRequestPayload extends Record<string, unknown> {
 }
 
 type EmbedResponsePayload = Record<string, unknown> | null;
+
+interface VipEmbedResponse extends Record<string, unknown> {
+  feature: string;
+  guildId: string;
+  totalVips: number;
+  lastUpdatedAt: string;
+  refreshHintSeconds: number;
+  maxEmbedsPerMessage: number;
+  header?: { title?: string | null; message?: string | null };
+  messages?: MessageBlock[];
+}
+
 type EmbedBuilder = (payload: EmbedRequestPayload) => Promise<EmbedResponsePayload>;
 type EmbedObject = Record<string, unknown>;
 
@@ -50,6 +63,7 @@ const VIP_REFRESH_SECONDS = 7 * 60;
 const DISCORD_MAX_EMBEDS = 10;
 const MAX_VIP_CARDS = 100;
 const DISCORD_API_BASE = process.env.DISCORD_API_BASE_URL ?? "https://discord.com/api/v10";
+const VIP_LIVE_CONFIG_DOC_ID = "vipLiveConfig";
 
 const embedBuilders: Record<string, EmbedBuilder> = {
   calendar: async ({ guildId }) => buildCalendarEmbed(guildId),
@@ -421,6 +435,58 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function persistVipLiveConfig(
+  payload: EmbedRequestPayload,
+  responsePayload: EmbedResponsePayload,
+  dispatchSummary: DispatchSummary,
+) {
+  try {
+    if (!payload.guildId) {
+      return;
+    }
+
+    const db = getAdminDb();
+    const settingsRef = db
+      .collection("communities")
+      .doc(payload.guildId)
+      .collection("settings")
+      .doc(VIP_LIVE_CONFIG_DOC_ID);
+
+    const normalizedChannelId =
+      typeof payload.channelId === "string" && payload.channelId.trim().length > 0
+        ? payload.channelId.trim()
+        : "";
+    const dispatchEnabled = Boolean(payload.dispatch && normalizedChannelId);
+
+    if (!dispatchEnabled && !normalizedChannelId && payload.dispatch === false) {
+      await settingsRef.delete();
+      return;
+    }
+
+    const response = (responsePayload ?? {}) as VipEmbedResponse;
+    const headerFromResponse = response.header ?? {};
+
+    const data = {
+      guildId: payload.guildId,
+      channelId: normalizedChannelId || null,
+      headerTitle: payload.headerTitle ?? headerFromResponse.title ?? null,
+      headerMessage: payload.headerMessage ?? headerFromResponse.message ?? null,
+      maxEmbedsPerMessage: payload.maxEmbedsPerMessage ?? response.maxEmbedsPerMessage ?? null,
+      refreshHintSeconds: response.refreshHintSeconds ?? VIP_REFRESH_SECONDS,
+      lastUpdatedAt: response.lastUpdatedAt ?? new Date().toISOString(),
+      dispatchEnabled,
+      updatedAt: new Date().toISOString(),
+      lastDispatchStatus: dispatchSummary.status,
+      lastDispatchMessageIds:
+        dispatchSummary.status === "sent" ? dispatchSummary.messageIds ?? [] : [],
+    };
+
+    await settingsRef.set(data, { merge: true });
+  } catch (error) {
+    console.error("Failed to persist VIP live embed configuration", error);
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const secretStatus = validateSecret(request);
@@ -488,9 +554,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    await persistVipLiveConfig(payload, responsePayload, dispatchSummary);
+
     return NextResponse.json(
       {
-        ...responsePayload,
+        ...(responsePayload ?? {}),
         dispatch: dispatchSummary,
       },
       { status: statusCode },
