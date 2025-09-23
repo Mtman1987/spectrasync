@@ -65,6 +65,16 @@ const MAX_VIP_CARDS = 100;
 const DISCORD_API_BASE = process.env.DISCORD_API_BASE_URL ?? "https://discord.com/api/v10";
 const VIP_LIVE_CONFIG_DOC_ID = "vipLiveConfig";
 
+interface VipLiveConfigDoc extends Record<string, unknown> {
+  guildId?: string;
+  channelId?: string | null;
+  headerTitle?: string | null;
+  headerMessage?: string | null;
+  maxEmbedsPerMessage?: number | null;
+  refreshHintSeconds?: number | null;
+  lastDispatchMessageIds?: string[] | null;
+}
+
 const embedBuilders: Record<string, EmbedBuilder> = {
   calendar: async ({ guildId }) => buildCalendarEmbed(guildId),
   leaderboard: async ({ guildId }) => buildLeaderboardEmbed(guildId),
@@ -421,23 +431,31 @@ async function buildVipLiveEmbed(payload: EmbedRequestPayload): Promise<EmbedRes
   };
 }
 
-async function dispatchMessagesToDiscord(messages: MessageBlock[], channelId: string) {
+async function dispatchMessagesToDiscord(
+  messages: MessageBlock[],
+  channelId: string,
+  options: { previousChannelId?: string | null; previousMessageIds?: string[] } = {},
+) {
   const botToken = process.env.DISCORD_BOT_TOKEN;
   if (!botToken) {
     throw new Error("DISCORD_BOT_TOKEN is not configured.");
   }
 
   const userAgent = process.env.DISCORD_USER_AGENT ?? "SpectraSyncBot/1.0 (+https://spectrasync.app)";
+  const authHeaders = {
+    Authorization: `Bot ${botToken}`,
+    "User-Agent": userAgent,
+  } satisfies Record<string, string>;
+  const postHeaders = {
+    ...authHeaders,
+    "Content-Type": "application/json",
+  } satisfies Record<string, string>;
   const ids: string[] = [];
 
   for (const block of messages) {
     const response = await fetch(`${DISCORD_API_BASE}/channels/${channelId}/messages`, {
       method: "POST",
-      headers: {
-        Authorization: `Bot ${botToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": userAgent,
-      },
+      headers: postHeaders,
       body: JSON.stringify({ embeds: block.embeds }),
     });
 
@@ -458,11 +476,72 @@ async function dispatchMessagesToDiscord(messages: MessageBlock[], channelId: st
     }
   }
 
+  const sanitizedPreviousIds = Array.isArray(options.previousMessageIds)
+    ? Array.from(
+        new Set(
+          options.previousMessageIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0),
+        ),
+      )
+    : [];
+
+  if (sanitizedPreviousIds.length > 0) {
+    const previousChannelId =
+      options.previousChannelId && options.previousChannelId.trim().length > 0
+        ? options.previousChannelId.trim()
+        : channelId;
+
+    await deleteDiscordMessages(previousChannelId, sanitizedPreviousIds, authHeaders);
+  }
+
   return ids;
 }
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function deleteDiscordMessages(
+  channelId: string,
+  messageIds: string[],
+  headers: Record<string, string>,
+) {
+  for (const messageId of messageIds) {
+    try {
+      const response = await fetch(`${DISCORD_API_BASE}/channels/${channelId}/messages/${messageId}`, {
+        method: "DELETE",
+        headers,
+      });
+
+      if (!response.ok && response.status !== 404) {
+        const text = await response.text();
+        console.warn(
+          `[vip-live] Failed to delete Discord message ${messageId} from ${channelId}: ${response.status} ${text}`,
+        );
+      }
+    } catch (error) {
+      console.warn(`[vip-live] Error deleting Discord message ${messageId} from ${channelId}:`, error);
+    }
+
+    if (messageIds.length > 1) {
+      await delay(250);
+    }
+  }
+}
+
+async function getVipLiveConfigDoc(guildId: string): Promise<VipLiveConfigDoc | null> {
+  const db = getAdminDb();
+  const doc = await db
+    .collection("communities")
+    .doc(guildId)
+    .collection("settings")
+    .doc(VIP_LIVE_CONFIG_DOC_ID)
+    .get();
+
+  if (!doc.exists) {
+    return null;
+  }
+
+  return doc.data() as VipLiveConfigDoc;
 }
 
 async function persistVipLiveConfig(
@@ -552,6 +631,15 @@ export async function POST(request: NextRequest) {
 
     let statusCode = 200;
     let dispatchSummary: DispatchSummary = { status: "skipped" };
+    let existingConfig: VipLiveConfigDoc | null = null;
+
+    if (payload.dispatch) {
+      try {
+        existingConfig = await getVipLiveConfigDoc(payload.guildId);
+      } catch (error) {
+        console.error("Failed to load existing VIP live configuration", error);
+      }
+    }
 
     if (payload.dispatch) {
       if (!payload.channelId || typeof payload.channelId !== "string" || !payload.channelId.trim()) {
@@ -561,14 +649,27 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const channelId = payload.channelId.trim();
       const maybeMessages = (responsePayload as Record<string, unknown>).messages;
       if (!Array.isArray(maybeMessages) || maybeMessages.length === 0) {
         dispatchSummary = { status: "skipped", reason: "No messages to dispatch" };
       } else {
         try {
+          const previousChannelId =
+            existingConfig && typeof existingConfig.channelId === "string"
+              ? existingConfig.channelId.trim().length > 0
+                ? existingConfig.channelId.trim()
+                : null
+              : null;
+          const previousMessageIds = existingConfig?.lastDispatchMessageIds ?? [];
+
           const messageIds = await dispatchMessagesToDiscord(
             maybeMessages as MessageBlock[],
-            payload.channelId,
+            channelId,
+            {
+              previousChannelId,
+              previousMessageIds,
+            },
           );
           dispatchSummary = {
             status: "sent",
