@@ -13,7 +13,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit",
-    "ngrok": "ngrok start --config \"%USERPROFILE%\\.ngrok2\\ngrok.yml\" cosmicdev",
+    "ngrok": "ngrok start --config \"%USERPROFILE%\\\\.ngrok2\\\\ngrok.yml\" cosmicdev",
     "dev:with-tunnel": "powershell -ExecutionPolicy Bypass -File scripts/dev-with-tunnel.ps1"
   },
   "dependencies": {
@@ -81,4 +81,4 @@
       ".": ">=0.2.4"
     }
   }
-}\n
+}
