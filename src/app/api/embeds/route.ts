@@ -1,4 +1,4 @@
-﻿import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { format } from "date-fns";
 
 import { buildCalendarEmbed } from "@/app/calendar/actions";
@@ -281,6 +281,7 @@ async function buildVipLiveEmbed(payload: EmbedRequestPayload): Promise<EmbedRes
   const ordered = liveVips.length ? pickVipOrdering(liveVips, payload) : [];
   const cardEmbeds: EmbedObject[] = [];
   const cardsMeta: Array<Record<string, unknown>> = [];
+
   if (!ordered.length) {
     cardEmbeds.push({
       description: "No VIPs are live right now. Check back soon for more community adventures!",
